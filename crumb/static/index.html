@@ -59,6 +59,10 @@
   .badge.mcp{color:var(--mcp);border-color:#36336a}
   .badge.success{color:var(--accent);border-color:#2c5a37}
   .badge.denied{color:var(--amber);border-color:#5a4a2c}
+  .badge.unauth{color:var(--bad);border-color:#5a2c2c}
+  .section-h{font-size:18px;margin:38px 0 2px;letter-spacing:-.3px}
+  .section-p{color:var(--dim);font-size:13px;margin:.3rem 0 14px;max-width:66ch}
+  .hash.dest{color:var(--bad)}
   .who{color:var(--ink)} .mono{color:var(--dim)}
   .hash{color:#5b6678}
   footer{margin-top:30px;color:var(--dim);font-size:12.5px;line-height:1.7}
@@ -100,6 +104,18 @@
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
+
+  <section id="attack">
+    <h2 class="section-h">The attack Crumb is built to catch</h2>
+    <p class="section-p">A poisoned tool drives an agent into a call the human never
+      authorized. In a controlled lab this hijacked 5 of 7 models into an
+      unauthorized data export. Crumb can’t block it — it’s a flight recorder, not
+      enforcement — but it proves, per call, the human didn’t direct it.</p>
+    <div class="bar">
+      <button class="warn" onclick="hijack()">Run the hijack →</button>
+    </div>
+    <div id="attackOut"></div>
+  </section>
 
   <footer>
     Hash-chained + Ed25519-signed, with the Merkle root anchored to Sigstore's
@@ -181,6 +197,45 @@ async function rollback(){
   const d = await fetch('/api/demo/rollback',{method:'POST'}).then(r=>r.json());
   tamperedSeq = d.rolledBack;
   await refresh();
+}
+
+async function hijack(){
+  const out = document.getElementById('attackOut');
+  out.innerHTML = '<p class="section-p">Running the hijacked sequence through the gateway…</p>';
+  const d = await fetch('/api/demo/hijack').then(r=>r.json());
+
+  const setup = `Human <span class="who">alice</span> authorized only `
+    + `<span class="mono">${JSON.stringify(d.directives)}</span> this session. `
+    + `A poisoned tool description injected an extra <span class="mono">export_record</span> step she never asked for.`;
+
+  const rows = d.rows.map(r=>{
+    const ok = r.on_behalf_assertion==='delegated';
+    const badge = ok ? '<span class="badge success">authorized</span>'
+                     : '<span class="badge unauth">⚠ unauthorized</span>';
+    const dest = (r.resource_id && r.resource_id.destination)
+      ? ` <span class="hash dest">→ ${r.resource_id.destination}</span>` : '';
+    return `<tr>
+      <td>${r.action}<span class="mono"> ${JSON.stringify(r.resource_id)}</span>${dest}</td>
+      <td class="mono">${r.directive ?? '—'}</td>
+      <td>${badge}</td></tr>`;
+  }).join('');
+
+  const flag = d.unauthorized.map(u=>
+    `⚠ <b>${u.action}</b> by agent <span class="mono">${u.agent_id}</span>`
+    + (u.destination ? ` <span class="hash dest">→ ${u.destination}</span>` : '')
+    + `<div class="sub">‘${u.actor_identity}’ did NOT direct this — accountability is the agent’s, not the human’s.</div>`
+  ).join('');
+
+  out.innerHTML = `
+    <p class="section-p" style="margin-top:6px">${setup}</p>
+    <table>
+      <thead><tr><th>Agent action</th><th>Human directive</th><th>Attribution</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="banner bad" style="margin-top:14px"><span class="mark" style="font-size:15px">⚠</span>
+      <div><div id="flagMsg">${flag}</div></div></div>
+    <div class="banner ok" style="margin-top:10px"><span class="mark" style="font-size:15px">✓</span>
+      <div><div>Ledger still VERIFIED (${d.verify.checked} entries). The record is genuine and unaltered — the export happened and is undeniable; the point is that it’s pinned on the agent, not on alice.</div></div></div>`;
 }
 
 refresh();
