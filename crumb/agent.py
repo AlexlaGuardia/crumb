@@ -29,6 +29,23 @@ class ToolCall:
         """How this looks on the wire — what a naive audit log would capture."""
         return json.dumps({"name": self.name, "arguments": self.arguments}, indent=2)
 
+    @classmethod
+    def from_openai(cls, tool_call: dict) -> "ToolCall":
+        """Normalize an OpenAI function-call. `arguments` is a JSON string on the
+        wire; either form is accepted. Neither carries a human — by protocol."""
+        fn = tool_call.get("function", tool_call)
+        args = fn.get("arguments", {})
+        if isinstance(args, str):
+            args = json.loads(args or "{}")
+        return cls(name=fn["name"], arguments=args)
+
+    @classmethod
+    def from_mcp(cls, request: dict) -> "ToolCall":
+        """Normalize an MCP `tools/call` JSON-RPC request to the same canonical
+        shape. Different wire, same gap: identity is nowhere in the envelope."""
+        params = request.get("params", {})
+        return cls(name=params["name"], arguments=params.get("arguments", {}))
+
 
 class FakeModel:
     """Stands in for an LLM. Returns a fixed tool call for a known prompt."""

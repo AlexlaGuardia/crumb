@@ -37,7 +37,7 @@ class Gateway:
         self.ledger = ledger
         self.agent_id = agent_id
 
-    def dispatch(self, session: Session, call: ToolCall) -> Dispatch:
+    def dispatch(self, session: Session, call: ToolCall, transport: str = "openai") -> Dispatch:
         # 1. WHO — the human comes from the verified session, not from the model.
         human = auth.verify_session(session.token)["sub"]
 
@@ -45,15 +45,19 @@ class Gateway:
         resource = call.name
         token = tokens.mint_delegation(human, self.agent_id, resource)
 
-        # 3. ACT — call the tool with the token. The tool verifies a real human is behind it.
+        # 3. ACT — reach the tool with the token. Whatever wire the call arrived on,
+        #    it leaves the chokepoint as a governed call the resource verifies.
         outcome, result = "success", None
         try:
-            fn = getattr(tools, call.name)
-            result = fn(token=token, **call.arguments)
+            if transport == "mcp":
+                result = self._dispatch_mcp(call, token)
+            else:
+                result = self._dispatch_openai(call, token)
         except Exception as e:  # tool rejected the call, or the record didn't exist
             outcome, result = "denied", {"error": str(e)}
 
-        # 4. RECORD — write the signed crumb. Now the trail leads back to the human.
+        # 4. RECORD — write the signed crumb. One schema, both protocols; `transport`
+        #    is the only discriminator. The trail leads back to the human either way.
         record = self.ledger.append(
             {
                 "actor_identity": human,
@@ -61,7 +65,31 @@ class Gateway:
                 "action": call.name,
                 "resource_id": call.arguments,
                 "outcome": outcome,
+                "transport": transport,
                 "ts": datetime.now(timezone.utc).isoformat(),
             }
         )
         return Dispatch(result=result, record=record, token=token)
+
+    def _dispatch_openai(self, call: ToolCall, token: str) -> object:
+        """OpenAI path: the tool is a local function. Identity is pure runtime
+        convention — the protocol gives us no place to put it on the wire."""
+        fn = getattr(tools, call.name)
+        return fn(token=token, **call.arguments)
+
+    def _dispatch_mcp(self, call: ToolCall, token: str) -> object:
+        """MCP path: re-issue the call to an upstream MCP server as a JSON-RPC
+        `tools/call`, with the exchanged token in the Authorization header. The
+        server reads `sub` from it — the same human, proven over a different wire."""
+        from . import mcp_server
+
+        request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": call.name, "arguments": call.arguments},
+        }
+        resp = mcp_server.handle(request, bearer=token)
+        if "error" in resp:
+            raise RuntimeError(resp["error"]["message"])
+        return resp["result"]
