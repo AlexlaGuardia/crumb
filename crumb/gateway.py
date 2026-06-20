@@ -39,8 +39,21 @@ class Gateway:
 
     def dispatch(self, session: Session, call: ToolCall, transport: str = "openai",
                  ts: str | None = None) -> Dispatch:
-        # 1. WHO — the human comes from the verified session, not from the model.
-        human = auth.verify_session(session.token)["sub"]
+        # 1. WHO + WHAT-WAS-AUTHORIZED — both come from the verified session, not
+        #    from the model. `directives` is the set of actions the human approved
+        #    at login; the model can't add to it.
+        claims = auth.verify_session(session.token)
+        human = claims["sub"]
+        authorized = claims.get("directives", [])
+
+        # 1b. RECONCILE INTENT — is this call something the human actually directed?
+        #     If yes, point the crumb at the authorizing directive. If no, the crumb
+        #     records the action with NO human directive and flags it unauthorized —
+        #     that's how a prompt-injected/hijacked tool call is exposed and pinned
+        #     on the agent, not falsely on the human.
+        is_authorized = call.name in authorized
+        directive = call.name if is_authorized else None
+        on_behalf = "delegated" if is_authorized else "unauthorized"
 
         # 2. BIND — mint a delegation token carrying (human + agent), scoped to the tool.
         resource = call.name
@@ -65,6 +78,8 @@ class Gateway:
                 "agent_id": self.agent_id,
                 "action": call.name,
                 "resource_id": call.arguments,
+                "directive": directive,              # the human authority, or null
+                "on_behalf_assertion": on_behalf,    # "delegated" vs "unauthorized"
                 "outcome": outcome,
                 "transport": transport,
                 "ts": ts or datetime.now(timezone.utc).isoformat(),

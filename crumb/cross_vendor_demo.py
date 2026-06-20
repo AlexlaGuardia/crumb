@@ -29,7 +29,7 @@ LINE = "─" * 70
 
 
 def main() -> None:
-    session = auth.login("alice")
+    session = auth.login("alice", directives=("read_record",))
     ledger = Ledger(path=LEDGER, key_path=KEY)
     ledger.reset()  # fresh chain so the side-by-side is deterministic
     gw = Gateway(ledger=ledger, agent_id="crumb-agent-1")

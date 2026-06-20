@@ -26,7 +26,7 @@ LINE = "─" * 66
 
 
 def _act(gateway: Gateway, who: str, record_id: int) -> None:
-    session = auth.login(who)
+    session = auth.login(who, directives=("read_record",))
     gateway.dispatch(session, ToolCall(name="read_record", arguments={"record_id": record_id}))
 
 

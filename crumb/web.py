@@ -54,7 +54,7 @@ def _seed() -> None:
     gw = _gateway()
     gw.ledger.reset()
     for who, transport, record_id, ts in _SEED:
-        session = auth.login(who)
+        session = auth.login(who, directives=("read_record",))
         call = ToolCall(name="read_record", arguments={"record_id": record_id})
         gw.dispatch(session, call, transport=transport, ts=ts)
 

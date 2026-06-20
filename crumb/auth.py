@@ -27,26 +27,37 @@ _SESSION_TTL = 3600  # seconds
 
 @dataclass
 class Session:
-    """An authenticated human session. `sub` is the source of truth for 'who'."""
+    """An authenticated human session. `sub` is the source of truth for 'who';
+    `directives` is the source of truth for 'what the human authorized'.
+
+    Both are captured here, at t=0, and ride inside the signed session token — so
+    the gateway reads the human's INTENT from verified claims, never from the
+    model. An action the human never authorized has no directive to point to, and
+    that absence is exactly what exposes a hijacked tool call downstream.
+    """
 
     sub: str
     token: str
+    directives: tuple[str, ...] = ()
 
     @property
     def human(self) -> str:
         return self.sub
 
 
-def login(user_id: str) -> Session:
-    """Stand-in for an OIDC login. Returns a session bound to the human's id."""
+def login(user_id: str, directives: tuple[str, ...] = ()) -> Session:
+    """Stand-in for an OIDC login. Returns a session bound to the human's id and
+    the set of actions they authorized this session (by tool name). The model
+    cannot widen this set — it's signed into the session token at login."""
     now = int(time.time())
     claims = {
         "sub": user_id,
+        "directives": list(directives),
         "iat": now,
         "exp": now + _SESSION_TTL,
     }
     token = jwt.encode(claims, _DEV_SECRET, algorithm=_ALGO)
-    return Session(sub=user_id, token=token)
+    return Session(sub=user_id, token=token, directives=tuple(directives))
 
 
 def verify_session(token: str) -> dict:

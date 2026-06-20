@@ -39,7 +39,8 @@ def _seed() -> None:
     gw.ledger.reset()
     for who, transport, rid in [("alice", "openai", 42), ("bob", "mcp", 43),
                                 ("carol", "openai", 42)]:
-        gw.dispatch(auth.login(who), ToolCall("read_record", {"record_id": rid}), transport=transport)
+        gw.dispatch(auth.login(who, directives=("read_record",)),
+                    ToolCall("read_record", {"record_id": rid}), transport=transport)
 
 
 def _operator_rollback() -> None:

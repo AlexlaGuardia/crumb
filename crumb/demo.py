@@ -24,7 +24,7 @@ LINE = "─" * 66
 
 def main() -> None:
     # The human authenticates. We capture their identity once, up front.
-    session = auth.login("alice")
+    session = auth.login("alice", directives=("read_record",))
     print(LINE)
     print(f"  Human authenticated.  sub = {session.human!r}")
     print(LINE)
