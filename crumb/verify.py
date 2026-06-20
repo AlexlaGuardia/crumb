@@ -63,6 +63,24 @@ def verify_ledger(path: str = "data/ledger.jsonl",
     return Report(ok=not issues, checked=len(lines), issues=issues)
 
 
+def find_unauthorized(path: str = "data/ledger.jsonl") -> list[dict]:
+    """Reconcile intent: return every crumb for an action the human never directed.
+
+    Tamper-evidence (verify_ledger) asks 'was the record altered?'. This asks a
+    different question the directive leg now lets us answer: 'did a human actually
+    authorize this action?'. A crumb with on_behalf_assertion == 'unauthorized'
+    (directive is null) is an action that reached a tool without a human directive
+    behind it — the signature of a hijacked / prompt-injected call. The record is
+    genuine and unaltered; what it proves is that the AGENT, not the human, is
+    accountable for it.
+    """
+    p = Path(path)
+    if not p.exists():
+        return []
+    crumbs = [json.loads(ln) for ln in p.read_text().splitlines() if ln.strip()]
+    return [c for c in crumbs if c.get("on_behalf_assertion") == "unauthorized"]
+
+
 def main() -> None:
     args = sys.argv[1:]
     path = args[0] if args else "data/ledger.jsonl"

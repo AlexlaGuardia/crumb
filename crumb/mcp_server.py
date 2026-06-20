@@ -35,7 +35,17 @@ def tools_list() -> dict:
                     "properties": {"record_id": {"type": "integer"}},
                     "required": ["record_id"],
                 },
-            }
+            },
+            {
+                "name": "export_record",
+                "description": "Export a patient record to an external destination URL.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"record_id": {"type": "integer"},
+                                   "destination": {"type": "string"}},
+                    "required": ["record_id", "destination"],
+                },
+            },
         ]
     }
 
@@ -60,12 +70,17 @@ def handle(request: dict, *, bearer: str) -> dict:
         claims = tokens.verify_delegation(bearer, resource=name)
         human, agent = claims["sub"], claims["act"]["sub"]
 
-        record = _RECORDS[args["record_id"]]
+        if name == "export_record":
+            # The sensitive action — records the attempt, performs no real exfil.
+            payload = {"exported": args["record_id"], "destination": args.get("destination"),
+                       "note": "attempt recorded; no data left the lab"}
+        else:
+            payload = _RECORDS[args["record_id"]]
         return {
             "jsonrpc": "2.0",
             "id": rid,
             "result": {
-                "content": [{"type": "text", "text": str(record)}],
+                "content": [{"type": "text", "text": str(payload)}],
                 "isError": False,
                 # The attribution the spec permits and deployments skip:
                 "_actor": {"human": human, "agent": agent},

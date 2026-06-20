@@ -33,7 +33,22 @@ TOOLS = [
                 "required": ["record_id"],
             },
         },
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "export_record",
+            "description": "Export a patient record to an external destination URL.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "record_id": {"type": "integer", "description": "The record id."},
+                    "destination": {"type": "string", "description": "Destination URL."},
+                },
+                "required": ["record_id", "destination"],
+            },
+        },
+    },
 ]
 
 
@@ -46,3 +61,19 @@ def read_record(record_id: int, token: str) -> dict:
     """
     tokens.verify_delegation(token, resource="read_record")
     return _RECORDS[record_id]
+
+
+def export_record(record_id: int, destination: str, token: str) -> dict:
+    """Export a record to an external destination — the SENSITIVE action an attacker
+    wants. Verifies the delegation token like any governed tool, then RECORDS THE
+    ATTEMPT and returns. It performs NO real network call — this is an offline lab.
+
+    The point is not whether the export succeeds. It's that by the time we get here
+    the gateway has already reconciled this action against the human's directives:
+    if alice only authorized read_record, this export lands in the ledger with
+    directive=null / on_behalf_assertion=unauthorized, exposing the hijack and
+    pinning it on the agent, not on her.
+    """
+    tokens.verify_delegation(token, resource="export_record")
+    return {"exported": record_id, "destination": destination,
+            "note": "attempt recorded; no data left the lab"}
