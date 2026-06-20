@@ -24,8 +24,8 @@ It is **not** a control plane. It doesn't block, doesn't author policy, doesn't 
 
 - **P0 — Skeleton** ✓ A human logs in, an agent calls a tool, and the tool call carries zero identity. The gap, made visible.
 - **P1 — Gateway + signed record** ✓ The gateway pulls the human from the session (never from the model), binds them to the agent in an RFC 8693-shaped delegation token, the tool serves data only against that token, and a hash-chained, Ed25519-signed crumb lands in the ledger.
-- **P2 — Verifier + tamper demo** ← *you are here.* A `verify` CLI proves the log is intact. Edit one past row and it screams `MISMATCH`.
-- **P3 — Cross-vendor.** Same recorder fronts a real MCP server. One schema, two protocols.
+- **P2 — Verifier + tamper demo** ✓ A `verify` CLI re-walks the log and checks integrity, chain linkage, and signatures. Edit a field, delete an entry, or forge-and-rehash — each breaks a different check and it screams `MISMATCH` at the exact entry.
+- **P3 — Cross-vendor** ← *you are here.* Same recorder fronts a real MCP server. One schema, two protocols.
 - **P4 — Timeline view + external anchor.** One screen, and checkpoints anchored where even the operator can't rewrite them.
 
 Full design in [`SPEC.md`](./SPEC.md).
@@ -34,7 +34,10 @@ Full design in [`SPEC.md`](./SPEC.md).
 
 ```bash
 pip install -r requirements.txt
-python -m crumb.demo
+
+python -m crumb.demo          # the gap, then the gateway closing it
+python -m crumb.tamper_demo   # write crumbs, verify, tamper, watch it break
+python -m crumb.verify        # re-verify the ledger on its own
 ```
 
-You'll watch a human authenticate, an agent decide to read a "regulated" record, and the tool call go out with no idea who's behind it. That's the problem P1 solves.
+`demo` shows a human authenticate, an agent read a "regulated" record, and the crumb that ties the action back to them. `tamper_demo` is the one to watch: it writes a few signed crumbs, verifies the chain, then edits a past entry and verification catches it at the exact row.
