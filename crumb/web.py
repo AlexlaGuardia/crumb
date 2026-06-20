@@ -17,7 +17,7 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from . import anchor, auth
 from .agent import ToolCall
@@ -76,7 +76,19 @@ def _startup() -> None:
 
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
+    # Self-heal the public landing state. The demo mutates a SHARED on-disk ledger
+    # (any visitor can click Tamper/Rollback), so without this one tamper leaves the
+    # live site stuck on a red MISMATCH for every visitor after. The seed is
+    # deterministic, so reseeding reproduces the exact Merkle root anchored at
+    # startup — both the chain and the anchor come back VERIFIED. Every fresh load
+    # starts clean; the buttons still let a visitor break it on purpose.
+    _seed()
     return (HERE / "static" / "index.html").read_text()
+
+
+@app.get("/favicon.ico")
+def favicon() -> Response:
+    return Response(status_code=204)
 
 
 @app.get("/api/ledger")
