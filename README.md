@@ -22,9 +22,9 @@ It is **not** a control plane. It doesn't block, doesn't author policy, doesn't 
 
 ## Roadmap
 
-- **P0 — Skeleton** ← *you are here.* A human logs in, an agent calls a tool, and we show on screen that the tool call carries zero identity. The gap, made visible.
-- **P1 — Gateway + signed record.** A proxy stamps every tool call with the session's human identity and writes a hash-chained, signed, append-only record.
-- **P2 — Verifier + tamper demo.** A `verify` CLI proves the log is intact. Edit one past row and it screams `MISMATCH`.
+- **P0 — Skeleton** ✓ A human logs in, an agent calls a tool, and the tool call carries zero identity. The gap, made visible.
+- **P1 — Gateway + signed record** ✓ The gateway pulls the human from the session (never from the model), binds them to the agent in an RFC 8693-shaped delegation token, the tool serves data only against that token, and a hash-chained, Ed25519-signed crumb lands in the ledger.
+- **P2 — Verifier + tamper demo** ← *you are here.* A `verify` CLI proves the log is intact. Edit one past row and it screams `MISMATCH`.
 - **P3 — Cross-vendor.** Same recorder fronts a real MCP server. One schema, two protocols.
 - **P4 — Timeline view + external anchor.** One screen, and checkpoints anchored where even the operator can't rewrite them.
 

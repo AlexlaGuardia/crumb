@@ -9,6 +9,8 @@ of who the acting human is. The protocol has no slot for it.
 
 from __future__ import annotations
 
+from . import tokens
+
 # A tiny stand-in for a regulated datastore (PHI, in this case).
 _RECORDS = {
     42: {"id": 42, "name": "Dana Okafor", "dob": "1979-03-02", "dx": "Type 2 diabetes"},
@@ -35,6 +37,12 @@ TOOLS = [
 ]
 
 
-def read_record(record_id: int) -> dict:
-    """Return a patient record. Raises KeyError if it doesn't exist."""
+def read_record(record_id: int, token: str) -> dict:
+    """Return a patient record — but only to a caller with a valid delegation token.
+
+    The token arrives out-of-band from the gateway, never from the model. The
+    resource server verifies it before serving data, which is what proves a real
+    human (`claims["sub"]`) is behind the call. No token, no data.
+    """
+    tokens.verify_delegation(token, resource="read_record")
     return _RECORDS[record_id]

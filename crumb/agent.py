@@ -17,8 +17,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from . import tools
-
 
 @dataclass
 class ToolCall:
@@ -44,14 +42,24 @@ class FakeModel:
 
 
 class Agent:
-    """Runs a prompt: asks the model, executes the tool it picks."""
+    """Asks the model what to do, then reaches tools ONLY through the gateway.
 
-    def __init__(self, model: FakeModel | None = None):
+    The agent has no direct path to tools — every call is dispatched through the
+    gateway, which is where the human identity gets stamped on. That enforced
+    chokepoint is the whole design; without it, attribution is unenforceable.
+    """
+
+    def __init__(self, gateway, session, model: FakeModel | None = None):
+        self.gateway = gateway
+        self.session = session
         self.model = model or FakeModel()
 
-    def run(self, prompt: str) -> tuple[ToolCall, dict]:
-        """Return the tool call the model chose and the tool's result."""
-        call = self.model.decide(prompt)
-        fn = getattr(tools, call.name)
-        result = fn(**call.arguments)
-        return call, result
+    def decide(self, prompt: str) -> ToolCall:
+        """What the model wants to do — a bare tool call, no identity in it."""
+        return self.model.decide(prompt)
+
+    def run(self, prompt: str):
+        """Decide, then dispatch through the gateway. Returns (call, Dispatch)."""
+        call = self.decide(prompt)
+        dispatch = self.gateway.dispatch(self.session, call)
+        return call, dispatch
