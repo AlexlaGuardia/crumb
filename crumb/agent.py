@@ -1,0 +1,57 @@
+"""
+The agent loop.
+
+A real agent asks an LLM what to do, gets back a tool call, and runs it. We use
+a FakeModel here so P0 runs anywhere with no API key — but the shape it returns
+is exactly what OpenAI/Anthropic emit: an assistant turn with a `tool_calls`
+list of `{name, arguments}`. Swap FakeModel for a real client and nothing else
+changes (that's the point — the identity gap is in the protocol, not the model).
+
+The thing to notice: the tool call has no field for the human. The agent runs
+the tool with no idea who it's acting for. In P0 we just expose that gap. P1's
+gateway is what closes it.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+
+from . import tools
+
+
+@dataclass
+class ToolCall:
+    """One tool call as a model emits it. Note: no actor, no human, no identity."""
+
+    name: str
+    arguments: dict
+
+    def as_wire_json(self) -> str:
+        """How this looks on the wire — what a naive audit log would capture."""
+        return json.dumps({"name": self.name, "arguments": self.arguments}, indent=2)
+
+
+class FakeModel:
+    """Stands in for an LLM. Returns a fixed tool call for a known prompt."""
+
+    def decide(self, prompt: str) -> ToolCall:
+        # A real model would reason over `prompt` + tools.TOOLS and return this
+        # same structure. We hardcode one call so the demo is deterministic.
+        if "record 42" in prompt:
+            return ToolCall(name="read_record", arguments={"record_id": 42})
+        raise ValueError(f"FakeModel has no canned response for: {prompt!r}")
+
+
+class Agent:
+    """Runs a prompt: asks the model, executes the tool it picks."""
+
+    def __init__(self, model: FakeModel | None = None):
+        self.model = model or FakeModel()
+
+    def run(self, prompt: str) -> tuple[ToolCall, dict]:
+        """Return the tool call the model chose and the tool's result."""
+        call = self.model.decide(prompt)
+        fn = getattr(tools, call.name)
+        result = fn(**call.arguments)
+        return call, result
