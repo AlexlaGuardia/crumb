@@ -91,6 +91,21 @@ def favicon() -> Response:
     return Response(status_code=204)
 
 
+@app.get("/icon.svg")
+def icon_svg() -> Response:
+    return Response((HERE / "static" / "icon.svg").read_bytes(), media_type="image/svg+xml")
+
+
+@app.get("/icon-180.png")
+def icon_png() -> Response:
+    return Response((HERE / "static" / "icon-180.png").read_bytes(), media_type="image/png")
+
+
+@app.get("/og.png")
+def og_png() -> Response:
+    return Response((HERE / "static" / "og.png").read_bytes(), media_type="image/png")
+
+
 @app.get("/api/ledger")
 def api_ledger() -> JSONResponse:
     return JSONResponse({"entries": _read_ledger()})
