@@ -11,31 +11,36 @@ Run: uvicorn crumb.web:app --host 127.0.0.1 --port 8730
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
+from cryptography.hazmat.primitives import serialization
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from . import auth
+from . import anchor, auth
 from .agent import ToolCall
 from .gateway import Gateway
-from .ledger import Ledger
+from .ledger import Ledger, canonical
 from .verify import verify_ledger
 
 LEDGER = "data/ledger.jsonl"
 KEY = "data/ledger.key"
 PUB = "data/ledger.pub"
+ANCHORS = "data/anchors.jsonl"
 HERE = Path(__file__).parent
 AGENT_ID = "crumb-agent-1"
 
-# A realistic mix: two humans, both transports, one denied call.
+# A realistic mix: two humans, both transports, one denied call. Timestamps are
+# FIXED so the seed is deterministic — re-seeding reproduces identical crumbs, so
+# the Merkle root (and its Rekor anchor) stays valid across restores.
 _SEED = [
-    ("alice", "openai", 42),
-    ("bob", "mcp", 43),
-    ("carol", "openai", 42),
-    ("alice", "mcp", 99),   # record 99 doesn't exist → denied
-    ("bob", "openai", 43),
+    ("alice", "openai", 42, "2026-06-20T12:00:00+00:00"),
+    ("bob", "mcp", 43, "2026-06-20T12:01:00+00:00"),
+    ("carol", "openai", 42, "2026-06-20T12:02:00+00:00"),
+    ("alice", "mcp", 99, "2026-06-20T12:03:00+00:00"),   # record 99 missing → denied
+    ("bob", "openai", 43, "2026-06-20T12:04:00+00:00"),
 ]
 
 app = FastAPI(title="Crumb", docs_url=None, redoc_url=None)
@@ -48,10 +53,10 @@ def _gateway() -> Gateway:
 def _seed() -> None:
     gw = _gateway()
     gw.ledger.reset()
-    for who, transport, record_id in _SEED:
+    for who, transport, record_id, ts in _SEED:
         session = auth.login(who)
         call = ToolCall(name="read_record", arguments={"record_id": record_id})
-        gw.dispatch(session, call, transport=transport)
+        gw.dispatch(session, call, transport=transport, ts=ts)
 
 
 def _read_ledger() -> list[dict]:
@@ -63,7 +68,10 @@ def _read_ledger() -> list[dict]:
 
 @app.on_event("startup")
 def _startup() -> None:
-    _seed()  # every (re)start comes up on a clean, deterministic demo ledger
+    # Every (re)start comes up clean: deterministic ledger + one fresh anchor.
+    Path(ANCHORS).unlink(missing_ok=True)
+    _seed()
+    anchor.checkpoint("2026-06-20T12:05:00+00:00")  # publishes the root to Rekor
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -103,3 +111,35 @@ def api_tamper() -> JSONResponse:
     lines[target] = json.dumps(rec)
     Path(LEDGER).write_text("\n".join(lines) + "\n")
     return JSONResponse({"tampered": rec["seq"], "from": original, "to": "alice"})
+
+
+@app.get("/api/anchor")
+def api_anchor() -> JSONResponse:
+    """Anchor status: does the current ledger still match the root we published?"""
+    v = anchor.verify_anchors(LEDGER, ANCHORS)
+    latest = (anchor.read_anchors(ANCHORS) or [{}])[-1]
+    rk = latest.get("rekor", {})
+    return JSONResponse({**v, "rekor_url": rk.get("url"), "logIndex": rk.get("logIndex")})
+
+
+@app.post("/api/demo/rollback")
+def api_rollback() -> JSONResponse:
+    """The key-holder's attack: rewrite a crumb, then re-chain and re-sign EVERY
+    entry. The chain verifies clean afterward — only the anchor catches it."""
+    key = serialization.load_pem_private_key(Path(KEY).read_bytes(), password=None)
+    rows = [json.loads(ln) for ln in Path(LEDGER).read_text().splitlines() if ln.strip()]
+    target = next((i for i, r in enumerate(rows) if r["actor_identity"] == "bob"), None)
+    if target is None:
+        return JSONResponse({"rolledBack": None})
+    rows[target]["actor_identity"] = "alice"
+    prev = "0" * 64
+    for r in rows:
+        core = {k: v for k, v in r.items() if k not in ("entry_hash", "signature")}
+        core["prev_hash"] = prev
+        eh = hashlib.sha256(canonical(core)).hexdigest()
+        r.clear(); r.update(core)
+        r["entry_hash"] = eh
+        r["signature"] = "ed25519:" + key.sign(eh.encode()).hex()
+        prev = eh
+    Path(LEDGER).write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    return JSONResponse({"rolledBack": rows[target]["seq"]})

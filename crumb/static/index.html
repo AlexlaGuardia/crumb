@@ -64,10 +64,17 @@
     <div class="sub" id="bannerSub"></div></div>
   </div>
 
+  <div id="anchor" class="banner">
+    <span class="mark" style="font-size:15px">⚓</span>
+    <div><div id="anchorMsg">Checking the external anchor…</div>
+    <div class="sub" id="anchorSub"></div></div>
+  </div>
+
   <div class="bar">
-    <button onclick="verify()">Re-verify</button>
+    <button onclick="refresh()">Re-verify</button>
     <button onclick="seed()">Seed clean ledger</button>
     <button class="warn" onclick="tamper()">Tamper a record</button>
+    <button class="warn" onclick="rollback()">Operator rollback (re-sign history)</button>
   </div>
 
   <table>
@@ -79,9 +86,10 @@
   </table>
 
   <footer>
-    Hash-chained + Ed25519-signed. Edit any past field and the chain breaks at
-    that row. Don't trust this page — verify it yourself:
-    <code>python -m crumb.verify</code><br>
+    Hash-chained + Ed25519-signed, with the Merkle root anchored to Sigstore's
+    public Rekor log. A careless edit breaks the chain; a key-holder who re-signs
+    a rewritten history is caught by the anchor instead. Don't trust this page —
+    verify it yourself: <code>python -m crumb.verify</code> and the Rekor link above.<br>
     Source &amp; spec: <a href="https://github.com/AlexlaGuardia/crumb">github.com/AlexlaGuardia/crumb</a>
   </footer>
 </div>
@@ -122,19 +130,44 @@ async function verify(){
     : v.issues.map(([seq,reason])=>`entry ${seq}: ${reason}`).join('  ·  ');
 }
 
+async function loadAnchor(){
+  const a = await fetch('/api/anchor').then(r=>r.json());
+  const b = document.getElementById('anchor');
+  const mark = b.querySelector('.mark');
+  b.className = 'banner ' + (a.ok ? 'ok' : 'bad');
+  mark.textContent = a.ok ? '⚓ ✓' : '⚓ ✗';
+  const link = a.rekor_url
+    ? ` · <a href="${a.rekor_url}" target="_blank" style="color:inherit">Rekor logIndex ${a.logIndex}</a>`
+    : (a.externally_anchored===false ? ' · (Rekor unreachable — local checkpoint only)' : '');
+  document.getElementById('anchorMsg').innerHTML = a.ok
+    ? `Merkle root matches what was published to the public log.${link}`
+    : `Root no longer matches the anchored one — history was rewritten.${link}`;
+  document.getElementById('anchorSub').innerHTML = a.ok
+    ? 'Even an operator with the signing key can’t roll this back without the public root changing.'
+    : `anchored ${(a.anchored_root||'').slice(0,16)}… vs now ${(a.recomputed_root||'').slice(0,16)}…`;
+}
+
+async function refresh(){ await loadLedger(); await verify(); await loadAnchor(); }
+
 async function seed(){
   tamperedSeq = null;
   await fetch('/api/demo/seed',{method:'POST'});
-  await loadLedger(); await verify();
+  await refresh();
 }
 
 async function tamper(){
-  const r = await fetch('/api/demo/tamper',{method:'POST'}); const d = await r.json();
+  const d = await fetch('/api/demo/tamper',{method:'POST'}).then(r=>r.json());
   tamperedSeq = d.tampered;
-  await loadLedger(); await verify();
+  await refresh();
 }
 
-loadLedger(); verify();
+async function rollback(){
+  const d = await fetch('/api/demo/rollback',{method:'POST'}).then(r=>r.json());
+  tamperedSeq = d.rolledBack;
+  await refresh();
+}
+
+refresh();
 </script>
 </body>
 </html>

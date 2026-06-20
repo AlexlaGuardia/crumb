@@ -37,7 +37,8 @@ class Gateway:
         self.ledger = ledger
         self.agent_id = agent_id
 
-    def dispatch(self, session: Session, call: ToolCall, transport: str = "openai") -> Dispatch:
+    def dispatch(self, session: Session, call: ToolCall, transport: str = "openai",
+                 ts: str | None = None) -> Dispatch:
         # 1. WHO — the human comes from the verified session, not from the model.
         human = auth.verify_session(session.token)["sub"]
 
@@ -66,7 +67,7 @@ class Gateway:
                 "resource_id": call.arguments,
                 "outcome": outcome,
                 "transport": transport,
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": ts or datetime.now(timezone.utc).isoformat(),
             }
         )
         return Dispatch(result=result, record=record, token=token)
