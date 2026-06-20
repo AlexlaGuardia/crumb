@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Crumb — the trail leads back to the human</title>
+<title>Crumb: the trail leads back to the human</title>
 <style>
   :root{
     --bg:#0b0e14; --panel:#11151f; --line:#1e2533; --ink:#e6edf3;
@@ -55,7 +55,7 @@
   <header>
     <h1>Crumb<span class="dot">.</span></h1>
     <p>Every AI-agent action drops a crumb. The trail leads back to the human who
-       directed it — across MCP and OpenAI function-calling, in a tamper-evident
+       directed it, across MCP and OpenAI function-calling. A tamper-evident
        record an auditor can verify without trusting the operator.</p>
   </header>
 
@@ -88,8 +88,8 @@
   <footer>
     Hash-chained + Ed25519-signed, with the Merkle root anchored to Sigstore's
     public Rekor log. A careless edit breaks the chain; a key-holder who re-signs
-    a rewritten history is caught by the anchor instead. Don't trust this page —
-    verify it yourself: <code>python -m crumb.verify</code> and the Rekor link above.<br>
+    a rewritten history is caught by the anchor instead. Don't trust this page.
+    Verify it yourself: <code>python -m crumb.verify</code> and the Rekor link above.<br>
     Source &amp; spec: <a href="https://github.com/AlexlaGuardia/crumb">github.com/AlexlaGuardia/crumb</a>
   </footer>
 </div>
@@ -123,7 +123,7 @@ async function verify(){
   b.className = 'banner ' + (v.ok ? 'ok' : 'bad');
   mark.textContent = v.ok ? 'VERIFIED ✓' : 'MISMATCH ✗';
   document.getElementById('bannerMsg').textContent = v.ok
-    ? `${v.checked} crumbs — chain intact, every signature valid.`
+    ? `${v.checked} crumbs. Chain intact, every signature valid.`
     : `${v.checked} crumbs checked, ${v.issues.length} problem(s).`;
   document.getElementById('bannerSub').textContent = v.ok
     ? 'Each entry is linked to the last by hash and signed with Ed25519.'
@@ -138,10 +138,10 @@ async function loadAnchor(){
   mark.textContent = a.ok ? '⚓ ✓' : '⚓ ✗';
   const link = a.rekor_url
     ? ` · <a href="${a.rekor_url}" target="_blank" style="color:inherit">Rekor logIndex ${a.logIndex}</a>`
-    : (a.externally_anchored===false ? ' · (Rekor unreachable — local checkpoint only)' : '');
+    : (a.externally_anchored===false ? ' · (Rekor unreachable, local checkpoint only)' : '');
   document.getElementById('anchorMsg').innerHTML = a.ok
     ? `Merkle root matches what was published to the public log.${link}`
-    : `Root no longer matches the anchored one — history was rewritten.${link}`;
+    : `Root no longer matches the anchored one. History was rewritten.${link}`;
   document.getElementById('anchorSub').innerHTML = a.ok
     ? 'Even an operator with the signing key can’t roll this back without the public root changing.'
     : `anchored ${(a.anchored_root||'').slice(0,16)}… vs now ${(a.recomputed_root||'').slice(0,16)}…`;
