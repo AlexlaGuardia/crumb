@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
@@ -149,6 +150,41 @@ def api_anchor() -> JSONResponse:
     latest = (anchor.read_anchors(ANCHORS) or [{}])[-1]
     rk = latest.get("rekor", {})
     return JSONResponse({**v, "rekor_url": rk.get("url"), "logIndex": rk.get("logIndex")})
+
+
+@app.get("/api/idp")
+def api_idp() -> JSONResponse:
+    """Live proof of the bind (P3b): run a real RFC 8693 token exchange against
+    the IdP and verify the result against its published JWKS — decoded here so a
+    visitor sees an actual provider-signed token, not a claim about one.
+
+    Deliberately isolated from the timeline: it hits the IdP directly and degrades
+    to {available:false} if the provider is down, so the page never depends on it."""
+    import jwt
+
+    from . import tokens
+
+    idp = os.environ.get("CRUMB_IDP_URL", "http://127.0.0.1:8732").rstrip("/")
+    try:
+        session = auth.login("alice", directives=("read_record",))
+        token = tokens.exchange_delegation(
+            session.token, agent_id="support-agent", resource="read_record", idp_url=idp
+        )
+        header = jwt.get_unverified_header(token)
+        key = jwt.PyJWKClient(f"{idp}/jwks").get_signing_key_from_jwt(token).key
+        claims = jwt.decode(token, key, algorithms=["RS256"], audience="read_record")
+        return JSONResponse({
+            "available": True,
+            "alg": header["alg"],
+            "kid": header.get("kid"),
+            "iss": claims["iss"],
+            "sub": claims["sub"],
+            "act": claims["act"]["sub"],
+            "aud": claims["aud"],
+            "verified": True,
+        })
+    except Exception as exc:
+        return JSONResponse({"available": False, "reason": type(exc).__name__})
 
 
 @app.post("/api/demo/rollback")

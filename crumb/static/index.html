@@ -105,6 +105,17 @@
     <tbody id="rows"></tbody>
   </table>
 
+  <section id="bind">
+    <h2 class="section-h">The bind: a real token exchange</h2>
+    <p class="section-p">Before any crumb is written, the gateway proves who's
+      behind the call. It doesn't sign its own authority — it runs a real
+      <span class="mono">RFC 8693</span> exchange against an identity provider,
+      which returns a provider-signed token carrying the human and the agent. The
+      resource trusts the provider's public key, not a secret it shares with the
+      minter. Live exchange, decoded below.</p>
+    <div id="bindOut"></div>
+  </section>
+
   <section id="attack">
     <h2 class="section-h">The attack Crumb is built to catch</h2>
     <p class="section-p">A poisoned tool drives an agent into a call the human never
@@ -179,7 +190,30 @@ async function loadAnchor(){
     : `anchored ${(a.anchored_root||'').slice(0,16)}… vs now ${(a.recomputed_root||'').slice(0,16)}…`;
 }
 
-async function refresh(){ await loadLedger(); await verify(); await loadAnchor(); }
+async function loadBind(){
+  const out = document.getElementById('bindOut');
+  let d;
+  try { d = await fetch('/api/idp').then(r=>r.json()); }
+  catch { d = {available:false}; }
+  if(!d.available){
+    out.innerHTML = `<div class="banner"><span class="mark" style="font-size:15px">○</span>
+      <div><div>Provider offline right now. The exchange path is in the repo:
+      <code>python -m crumb.idp_demo</code> runs it end to end.</div></div></div>`;
+    return;
+  }
+  out.innerHTML = `
+    <div class="banner ok"><span class="mark" style="font-size:15px">✓</span>
+      <div>
+        <div><span class="who">${d.sub}</span> <span class="mono">(human)</span>
+          → acting agent <span class="who">${d.act}</span>,
+          scoped to <span class="mono">${d.aud}</span></div>
+        <div class="sub">${d.alg} token issued by <span class="mono">${d.iss}</span>
+          (kid <span class="mono">${d.kid}</span>), verified against the provider's
+          JWKS. No shared secret between minter and verifier.</div>
+      </div></div>`;
+}
+
+async function refresh(){ await loadLedger(); await verify(); await loadAnchor(); await loadBind(); }
 
 async function seed(){
   tamperedSeq = null;
