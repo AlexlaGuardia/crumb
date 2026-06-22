@@ -61,9 +61,14 @@ class Gateway:
         directive = call.name if is_authorized else None
         on_behalf = "delegated" if is_authorized else "unauthorized"
 
-        # 2. BIND — mint a delegation token carrying (human + agent), scoped to the tool.
+        # 2. BIND — get a delegation token carrying (human + agent), scoped to the tool.
+        #    Passing the session token lets the bind resolve to a real RFC 8693
+        #    exchange against the IdP when one is configured (CRUMB_IDP_URL); with
+        #    no IdP it falls back to a local dev mint. The gateway doesn't branch.
         resource = call.name
-        token = tokens.mint_delegation(human, self.agent_id, resource)
+        token = tokens.mint_delegation(
+            human, self.agent_id, resource, session_token=session.token
+        )
 
         # 3. ACT — reach the tool with the token. Whatever wire the call arrived on,
         #    it leaves the chokepoint as a governed call the resource verifies.
