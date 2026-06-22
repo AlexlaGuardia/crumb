@@ -37,6 +37,26 @@ def mint_delegation(human_sub: str, agent_id: str, resource: str, ttl: int = _TT
     return jwt.encode(claims, _DEV_SECRET, algorithm=_ALGO)
 
 
+def mint_service_account(service_id: str, resource: str, ttl: int = _TTL) -> str:
+    """Mint the token MOST MCP deployments actually send: a shared service
+    account, scoped to the resource, carrying NO `act` — so no human rides it.
+
+    This is the "wrong way" Crumb exists to expose. The resource server can prove
+    *a bot* called it, never *which person* was behind the bot. Same wire as a
+    delegation token; the missing `act` claim is the whole difference.
+    """
+    now = int(time.time())
+    claims = {
+        "sub": service_id,   # the bot itself — there is no human in this token
+        "aud": resource,
+        "jti": uuid.uuid4().hex,
+        "iat": now,
+        "exp": now + ttl,
+    }
+    return jwt.encode(claims, _DEV_SECRET, algorithm=_ALGO)
+
+
 def verify_delegation(token: str, resource: str) -> dict:
-    """Verify a delegation token for a given resource; return its claims."""
+    """Verify a token for a given resource; return its claims. Works for both
+    delegation tokens (with `act`) and service-account tokens (without)."""
     return jwt.decode(token, _DEV_SECRET, algorithms=[_ALGO], audience=resource)

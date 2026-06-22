@@ -56,18 +56,28 @@ Four moves:
 pip install -r requirements.txt
 
 python -m crumb.demo               # the gap, then the gateway closing it
-python -m crumb.cross_vendor_demo  # same action over OpenAI + MCP, one schema
+python -m crumb.cross_vendor_demo  # same action over OpenAI + a REAL MCP HTTP hop
 python -m crumb.tamper_demo        # write crumbs, verify, edit one, watch it break
 python -m crumb.anchor_demo        # the operator rollback the anchor catches
 python -m crumb.verify             # re-verify the ledger on its own
 
-uvicorn crumb.web:app --port 8730  # the timeline view + live tamper/rollback
+uvicorn crumb.web:app --port 8730       # the timeline view + live tamper/rollback
+uvicorn crumb.mcp_http:app --port 8731  # records-mcp as a standalone MCP server
+```
+
+`records-mcp` is a real Resource Server — drive it with any MCP client, or curl:
+
+```bash
+curl -s localhost:8731/mcp -H "Authorization: Bearer $TOKEN" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
+       "params":{"name":"read_record","arguments":{"record_id":42}}}'
+# no token → HTTP 401 + WWW-Authenticate, like any OAuth 2.1 Resource Server
 ```
 
 What each one shows:
 
 - **demo**: a human authenticates, an agent reads a "regulated" record, and the crumb ties the action back to them.
-- **cross_vendor_demo**: the same read driven once as an OpenAI function-call and once as an MCP `tools/call`. Both trace to the same human in one schema.
+- **cross_vendor_demo**: the same read driven once as an OpenAI function-call and once as a real MCP `tools/call` over HTTP to `records-mcp`. Both trace to the same human in one schema. Then, over that same wire, the same call with a service-account token (the human is gone) versus a delegation token (the human survives). That delta is the product.
 - **tamper_demo**: a careless edit. Verification catches it at the exact row.
 - **anchor_demo**: the one to watch. A key-holding operator rewrites a crumb *and re-signs the entire chain*, so per-entry `verify` passes the forgery. The Rekor anchor catches it, because the rewritten root is not the one already public.
 
@@ -75,7 +85,8 @@ What each one shows:
 
 - Attribution is only as good as the gateway's interposition. Bypass the proxy and attribution is void. The demo enforces the chokepoint; the tool refuses calls without a valid token.
 - OpenAI function-calling has zero native identity. The binding is a runtime convention, not a protocol guarantee. Crumb secures a runtime, not a wire format.
-- MCP attribution is permitted by the spec but rarely implemented. Crumb stamps the record, but it can't force a non-compliant upstream to *act* on the human identity.
+- MCP attribution is permitted by the spec but rarely implemented. `records-mcp` reads the human off the token over a real HTTP wire; most deployments send a shared service-account token instead and the human never makes it across. Crumb stamps the record, but it can't force a non-compliant upstream to *act* on the human identity.
+- The MCP transport here is plain JSON-RPC over HTTP with bearer auth. Streamable-HTTP/SSE framing (session ids, event streams) is the documented upgrade and changes the envelope, not the attribution.
 - The token is RFC 8693-*shaped* and minted with a dev key. Production swaps that for a real token exchange against an IdP (Keycloak/Zitadel/Auth0). It changes the issuer, not the demo.
 
 ## Built on

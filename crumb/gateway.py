@@ -33,9 +33,15 @@ class Dispatch:
 
 
 class Gateway:
-    def __init__(self, ledger: Ledger, agent_id: str):
+    def __init__(self, ledger: Ledger, agent_id: str, mcp_url: str | None = None):
         self.ledger = ledger
         self.agent_id = agent_id
+        # When set, the MCP path is a real HTTP hop to records-mcp (P3). When
+        # None, it falls back to an in-process call — used by the deterministic
+        # web seed, which reproduces a fixed timeline and can't depend on a live
+        # server being up next to it. The attribution logic is identical either
+        # way; only the wire changes.
+        self.mcp_url = mcp_url
 
     def dispatch(self, session: Session, call: ToolCall, transport: str = "openai",
                  ts: str | None = None) -> Dispatch:
@@ -94,18 +100,33 @@ class Gateway:
         return fn(token=token, **call.arguments)
 
     def _dispatch_mcp(self, call: ToolCall, token: str) -> object:
-        """MCP path: re-issue the call to an upstream MCP server as a JSON-RPC
-        `tools/call`, with the exchanged token in the Authorization header. The
-        server reads `sub` from it — the same human, proven over a different wire."""
-        from . import mcp_server
+        """MCP path: re-issue the call to records-mcp as a JSON-RPC `tools/call`,
+        with the exchanged token in the Authorization header. The server reads the
+        actor from it — the same human, proven over a different wire.
 
+        If `mcp_url` is set the hop is real HTTP (P3); otherwise it's an
+        in-process call to the same handler (the deterministic web seed)."""
         request = {
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
             "params": {"name": call.name, "arguments": call.arguments},
         }
-        resp = mcp_server.handle(request, bearer=token)
+
+        if self.mcp_url:
+            import httpx
+
+            resp = httpx.post(
+                self.mcp_url,
+                json=request,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10.0,
+            ).json()
+        else:
+            from . import mcp_server
+
+            resp = mcp_server.handle(request, bearer=token)
+
         if "error" in resp:
             raise RuntimeError(resp["error"]["message"])
         return resp["result"]
