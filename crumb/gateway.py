@@ -44,7 +44,7 @@ class Gateway:
         self.mcp_url = mcp_url
 
     def dispatch(self, session: Session, call: ToolCall, transport: str = "openai",
-                 ts: str | None = None) -> Dispatch:
+                 ts: str | None = None, via: list | None = None) -> Dispatch:
         # 1. WHO + WHAT-WAS-AUTHORIZED — both come from the verified session, not
         #    from the model. `directives` is the set of actions the human approved
         #    at login; the model can't add to it.
@@ -66,9 +66,27 @@ class Gateway:
         #    exchange against the IdP when one is configured (CRUMB_IDP_URL); with
         #    no IdP it falls back to a local dev mint. The gateway doesn't branch.
         resource = call.name
-        token = tokens.mint_delegation(
-            human, self.agent_id, resource, session_token=session.token
-        )
+        if via:
+            # Multi-hop: the human directed via[0], who delegated down the chain to
+            # via[-1], the agent that actually calls the tool. Mint the first hop,
+            # then nest each subsequent actor (RFC 8693 §4.1). The human stays `sub`
+            # the whole way; the token carries the full, signed delegation chain.
+            token = tokens.mint_delegation(
+                human, via[0], resource, session_token=session.token
+            )
+            for hop in via[1:]:
+                token = tokens.extend_delegation(token, hop, resource)
+            acting_agent = via[-1]
+            # A real chain (2+ hops) records actor_chain; a single-element via is
+            # just single-hop with a named agent, so it omits the field and stays
+            # hash-identical to an agent_id dispatch — the determinism invariant.
+            chain = list(reversed(via)) if len(via) > 1 else None  # most-recent first
+        else:
+            token = tokens.mint_delegation(
+                human, self.agent_id, resource, session_token=session.token
+            )
+            acting_agent = self.agent_id
+            chain = None
 
         # 3. ACT — reach the tool with the token. Whatever wire the call arrived on,
         #    it leaves the chokepoint as a governed call the resource verifies.
@@ -83,19 +101,23 @@ class Gateway:
 
         # 4. RECORD — write the signed crumb. One schema, both protocols; `transport`
         #    is the only discriminator. The trail leads back to the human either way.
-        record = self.ledger.append(
-            {
-                "actor_identity": human,
-                "agent_id": self.agent_id,
-                "action": call.name,
-                "resource_id": call.arguments,
-                "directive": directive,              # the human authority, or null
-                "on_behalf_assertion": on_behalf,    # "delegated" vs "unauthorized"
-                "outcome": outcome,
-                "transport": transport,
-                "ts": ts or datetime.now(timezone.utc).isoformat(),
-            }
-        )
+        fields = {
+            "actor_identity": human,
+            "agent_id": acting_agent,            # the agent that reached the tool
+            "action": call.name,
+            "resource_id": call.arguments,
+            "directive": directive,              # the human authority, or null
+            "on_behalf_assertion": on_behalf,    # "delegated" vs "unauthorized"
+            "outcome": outcome,
+            "transport": transport,
+            "ts": ts or datetime.now(timezone.utc).isoformat(),
+        }
+        # Multi-hop only: record the full delegation path, most-recent actor first.
+        # Single-hop crumbs omit the field entirely, so their hashes are unchanged
+        # and the deterministic web seed + Rekor anchor stay byte-for-byte stable.
+        if chain is not None:
+            fields["actor_chain"] = chain
+        record = self.ledger.append(fields)
         return Dispatch(result=result, record=record, token=token)
 
     def _dispatch_openai(self, call: ToolCall, token: str) -> object:

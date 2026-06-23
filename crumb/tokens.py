@@ -99,6 +99,55 @@ def mint_delegation(human_sub: str, agent_id: str, resource: str, ttl: int = _TT
     return jwt.encode(claims, _DEV_SECRET, algorithm=_ALGO)
 
 
+def extend_delegation(prior_token: str, new_agent_id: str, resource: str,
+                      ttl: int = _TTL) -> str:
+    """Add one hop to an existing delegation chain (RFC 8693 §4.1 nested `act`).
+
+    Multi-hop: a human directs agent A, A delegates to agent B, B calls the tool.
+    The human stays the `sub` the whole way down; each new actor nests the prior
+    `act` under its own, so the issued token carries the full chain with the most
+    recent actor outermost. `actor_chain` walks it back to the agent that first
+    acted; `sub` is the human at the root.
+
+    Real path (IdP configured): re-exchange the PRIOR delegation token as the
+    `subject_token` and the provider nests its `act` (see crumb/idp.py). Dev path:
+    decode the prior token and re-mint with the prior `act` nested under the new
+    agent. Either way the chain is signed end to end, so tampering a middle actor
+    breaks the signature — there is no per-hop seam to forge at."""
+    if _idp_url():
+        return exchange_delegation(prior_token, new_agent_id, resource, ttl=ttl)
+
+    prior = jwt.decode(prior_token, _DEV_SECRET, algorithms=[_ALGO],
+                       options={"verify_aud": False})
+    act = {"sub": new_agent_id}
+    if prior.get("act"):
+        act["act"] = prior["act"]          # nest the prior actor chain beneath us
+    now = int(time.time())
+    claims = {
+        "sub": prior["sub"],               # the human stays the subject, every hop
+        "act": act,
+        "aud": resource,
+        "jti": uuid.uuid4().hex,
+        "iat": now,
+        "exp": now + ttl,
+    }
+    return jwt.encode(claims, _DEV_SECRET, algorithm=_ALGO)
+
+
+def actor_chain(claims: dict) -> list:
+    """The delegation chain carried in a token's nested `act`, most-recent actor
+    first, ending with the agent that first acted for the human. The human is the
+    root `sub`, not part of this list. Single-hop returns one agent; an empty list
+    means a token with no actor at all (a service account — no human rode it)."""
+    chain: list = []
+    act = claims.get("act")
+    while isinstance(act, dict):
+        if "sub" in act:
+            chain.append(act["sub"])
+        act = act.get("act")
+    return chain
+
+
 def mint_service_account(service_id: str, resource: str, ttl: int = _TTL) -> str:
     """Mint the token MOST MCP deployments actually send: a shared service
     account, scoped to the resource, carrying NO `act` — so no human rides it.

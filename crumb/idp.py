@@ -89,6 +89,21 @@ def _mint(claims: dict) -> str:
     return jwt.encode(claims, _PRIVATE_KEY, algorithm=_ALGO, headers={"kid": _KID})
 
 
+def _verify_subject(token: str) -> dict:
+    """Recover the verified claims of an exchange's `subject_token`. A first-hop
+    subject is the human's HS256 session. A later-hop subject is a delegation token
+    THIS provider already issued (RS256), re-exchanged to append an actor — RFC
+    8693 §4.1 chained delegation. We verify that against our own public key.
+    Audience isn't checked here: the subject is being re-scoped to a new resource
+    by this very exchange."""
+    try:
+        return auth.verify_session(token)                       # human session (HS256)
+    except jwt.PyJWTError:
+        return jwt.decode(token, _PRIVATE_KEY.public_key(),     # our prior RS256 token
+                          algorithms=[_ALGO], issuer=ISSUER,
+                          options={"verify_aud": False})
+
+
 app = FastAPI(title="Crumb IdP", description="RFC 8693 token-exchange authorization server")
 
 
@@ -136,13 +151,17 @@ def token(
     if grant_type != _GRANT_TOKEN_EXCHANGE:
         raise HTTPException(400, detail="unsupported_grant_type")
 
-    # Validate the subject — the human's session. Invalid/expired => no exchange.
+    # Validate the subject. First hop: the human's session (HS256). Later hops in a
+    # delegation chain: a prior token this provider issued (RS256), re-exchanged to
+    # add an actor. Either way we recover the human (`sub`) and any actor chain
+    # already riding the token, so the next actor nests on top of it.
     try:
-        subject_claims = auth.verify_session(subject_token)
+        subject_claims = _verify_subject(subject_token)
     except jwt.PyJWTError as exc:
         raise HTTPException(400, detail=f"invalid_subject_token: {type(exc).__name__}")
 
     human = subject_claims["sub"]
+    prior_act = subject_claims.get("act")   # present when re-exchanging a delegation
 
     # The actor (agent). Prefer an explicit actor_token; fall back to the scope.
     agent_id = None
@@ -154,12 +173,16 @@ def token(
     if not agent_id:
         agent_id = (scope or "agent").strip()
 
+    act_claim = {"sub": agent_id}         # the agent acting on the human's behalf
+    if prior_act:
+        act_claim["act"] = prior_act      # nest the existing chain beneath the new actor
+
     now = int(time.time())
     access = _mint(
         {
             "iss": ISSUER,
-            "sub": human,                 # the human — RFC 8693 subject
-            "act": {"sub": agent_id},     # the agent acting on their behalf
+            "sub": human,                 # the human — RFC 8693 subject, at the root
+            "act": act_claim,             # the actor chain, most-recent outermost
             "aud": audience,              # scoped to one resource — RFC 8707 spirit
             "jti": uuid.uuid4().hex,
             "iat": now,
