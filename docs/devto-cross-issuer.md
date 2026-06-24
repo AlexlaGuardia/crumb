@@ -36,21 +36,7 @@ The catch is in the assumption hiding under "one provider."
 
 Real delegation does not stay inside one company. The interesting, dangerous case is the one that crosses.
 
-```mermaid
-sequenceDiagram
-    participant H as alice
-    participant A as IdP A (her company)
-    participant P as planner
-    participant B as IdP B (partner)
-    participant R as researcher
-    participant T as tool @ B
-    H->>A: login
-    A-->>P: token { iss:A, sub:alice, act:planner }
-    P->>B: exchange A's token, add researcher
-    B-->>R: token { iss:B, sub:alice, act:researcher->planner }
-    R->>T: call read_record
-    Note over T: verify the human across A and B
-```
+![Sequence: alice authenticates at IdP A, an agent chain hands off into IdP B, and the tool verifies the human across both issuers](https://raw.githubusercontent.com/AlexlaGuardia/crumb/master/crumb/static/diagram-cross-issuer-chain.png)
 
 So `planner`, holding a token IdP A signed, needs the call into B's domain to carry a token B will honor. The textbook move is another RFC 8693 exchange, this time against B. You hand B the token A issued, and B mints you a fresh one.
 
@@ -80,20 +66,7 @@ Now the outer token is not an assertion that alice was authenticated. It is a po
 
 A verifier handed the outer token walks the chain backward and checks each segment against the key of the issuer that actually signed it.
 
-```mermaid
-flowchart LR
-    subgraph Vanilla["vanilla exchange"]
-      direction LR
-      a1["A token<br/>sub: alice"] -->|reissue| b1["B token<br/>sub: alice"]
-      b1 -.->|A's signature gone| t1["verifier trusts<br/>B's word"]
-    end
-    subgraph Stapled["stapled provenance"]
-      direction LR
-      a2["A token<br/>sub: alice"] -->|exchange + staple| b2["B token<br/>prv = A token"]
-      b2 -->|B segment, B's key| v2["verifier"]
-      b2 -->|A segment, A's key| v2
-    end
-```
+![Vanilla exchange discards A's signature so the verifier trusts B's word; stapled provenance keeps each segment verifiable against its own issuer's key](https://raw.githubusercontent.com/AlexlaGuardia/crumb/master/crumb/static/diagram-discard-vs-staple.png)
 
 Each rule maps to one way a dishonest issuer could try to cheat:
 
