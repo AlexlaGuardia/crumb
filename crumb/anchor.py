@@ -171,6 +171,97 @@ def verify_anchors(ledger_path: str = LEDGER, anchors_path: str = ANCHORS) -> di
     }
 
 
+def verify_checkpoint_in_rekor(
+    root: str,
+    tree_size: int,
+    ts: str,
+    rekor_url: str,
+) -> dict:
+    """Independently verify that a checkpoint is anchored in Rekor.
+
+    Reconstructs the exact checkpoint digest that was submitted, then GETs the
+    Rekor entry at `rekor_url` (which is the full entries URL returned by
+    _submit_rekor) and confirms that Rekor's stored hash matches what we
+    recomputed locally. This is done INDEPENDENTLY — no trust in whoever holds
+    the ledger, just a direct query to rekor.sigstore.dev.
+
+    Args:
+        root:       Merkle root hex string (from the anchor record).
+        tree_size:  Number of leaves at checkpoint time.
+        ts:         ISO timestamp string used when the checkpoint was created.
+        rekor_url:  Full Rekor entry URL, e.g.
+                    https://rekor.sigstore.dev/api/v1/log/entries/<uuid>
+
+    Returns:
+        dict with keys:
+            ok              — True only if rekor_digest == our recomputed digest
+            logIndex        — Rekor's log index (int or None)
+            integratedTime  — Rekor's integrated time (int or None)
+            rekor_url       — the URL queried
+            digest          — the digest we computed from the checkpoint
+            rekor_digest    — the hash Rekor has on file (None on error)
+            reason          — set only on failure / unreachable
+    """
+    import base64
+
+    cp = {"root": root, "tree_size": tree_size, "ts": ts}
+    digest = hashlib.sha256(canonical(cp)).hexdigest()
+
+    try:
+        req = urllib.request.Request(
+            rekor_url,
+            headers={"Accept": "application/json"},
+            method="GET",
+        )
+        body = json.load(urllib.request.urlopen(req, timeout=15))
+    except Exception as exc:
+        return {
+            "ok": False,
+            "logIndex": None,
+            "integratedTime": None,
+            "rekor_url": rekor_url,
+            "digest": digest,
+            "rekor_digest": None,
+            "reason": f"Rekor unreachable: {type(exc).__name__}: {exc}",
+        }
+
+    # body is { uuid: { body: <b64>, logIndex, integratedTime, ... } }
+    uuid = next(iter(body))
+    rec = body[uuid]
+    log_index = rec.get("logIndex")
+    integrated_time = rec.get("integratedTime")
+
+    # body field is base64-encoded JSON of the hashedrekord
+    try:
+        rekord = json.loads(base64.b64decode(rec["body"]))
+        rekor_digest = rekord["spec"]["data"]["hash"]["value"]
+    except Exception as exc:
+        return {
+            "ok": False,
+            "logIndex": log_index,
+            "integratedTime": integrated_time,
+            "rekor_url": rekor_url,
+            "digest": digest,
+            "rekor_digest": None,
+            "reason": f"could not parse Rekor body: {exc}",
+        }
+
+    ok = rekor_digest == digest
+    result = {
+        "ok": ok,
+        "logIndex": log_index,
+        "integratedTime": integrated_time,
+        "rekor_url": rekor_url,
+        "digest": digest,
+        "rekor_digest": rekor_digest,
+    }
+    if not ok:
+        result["reason"] = (
+            f"digest mismatch — local {digest[:16]}… vs Rekor {rekor_digest[:16]}…"
+        )
+    return result
+
+
 def main() -> None:
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     r = checkpoint(now)

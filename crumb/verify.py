@@ -35,15 +35,24 @@ class Report:
     issues: list = field(default_factory=list)  # (seq, reason)
 
 
-def verify_ledger(path: str = "data/ledger.jsonl",
-                  pubkey_path: str = "data/ledger.pub") -> Report:
-    pub = serialization.load_pem_public_key(Path(pubkey_path).read_bytes())
-    lines = Path(path).read_text().splitlines()
+def verify_entries(entries: list[dict], pub_pem: bytes) -> Report:
+    """Pure in-memory verification — no file I/O. Runs the same per-entry
+    integrity, chain, and Ed25519-signature checks as verify_ledger but over a
+    list already loaded into memory. Used by the CLI (remote verification) and
+    by tests.
+
+    Args:
+        entries:  list of dicts parsed from ledger JSONL (one per crumb).
+        pub_pem:  raw PEM bytes of the Ed25519 public key.
+
+    Returns:
+        Report(ok, checked, issues)  — identical shape to verify_ledger's return.
+    """
+    pub = serialization.load_pem_public_key(pub_pem)
     issues: list = []
     prev_hash = GENESIS
 
-    for i, line in enumerate(lines):
-        rec = json.loads(line)
+    for i, rec in enumerate(entries):
         seq = rec.get("seq", i)
         core = {k: v for k, v in rec.items() if k not in ENVELOPE}
 
@@ -60,7 +69,16 @@ def verify_ledger(path: str = "data/ledger.jsonl",
 
         prev_hash = rec["entry_hash"]
 
-    return Report(ok=not issues, checked=len(lines), issues=issues)
+    return Report(ok=not issues, checked=len(entries), issues=issues)
+
+
+def verify_ledger(path: str = "data/ledger.jsonl",
+                  pubkey_path: str = "data/ledger.pub") -> Report:
+    """Verify a ledger file on disk. Thin wrapper around verify_entries."""
+    pub_pem = Path(pubkey_path).read_bytes()
+    lines = Path(path).read_text().splitlines()
+    entries = [json.loads(ln) for ln in lines if ln.strip()]
+    return verify_entries(entries, pub_pem)
 
 
 def find_unauthorized(path: str = "data/ledger.jsonl") -> list[dict]:

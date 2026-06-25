@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crumb"
+version = "0.1.0"
+description = "Prove which human directed an AI agent's action — tamper-evident flight recorder."
+requires-python = ">=3.10"
+dependencies = [
+    "PyJWT>=2.10",
+    "cryptography>=44",
+    "fastapi>=0.128",
+    "uvicorn>=0.40",
+    "httpx>=0.28",
+]
+
+[project.scripts]
+crumb = "crumb.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["crumb*"]
+
+[tool.setuptools.package-data]
+crumb = ["static/*"]

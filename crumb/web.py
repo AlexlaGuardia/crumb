@@ -114,6 +114,21 @@ def api_ledger() -> JSONResponse:
     return JSONResponse({"entries": _read_ledger()})
 
 
+@app.get("/api/pubkey")
+def api_pubkey() -> Response:
+    """Return the Ed25519 public key as PEM text. Public by design — a third
+    party needs this to verify signatures without trusting the operator."""
+    pem = Path(PUB).read_text()
+    return Response(content=pem, media_type="text/plain")
+
+
+@app.get("/api/anchors")
+def api_anchors() -> JSONResponse:
+    """Return raw anchor records (root, tree_size, ts, rekor sub-object).
+    Public by design — an auditor fetches this to run an independent Rekor check."""
+    return JSONResponse({"anchors": anchor.read_anchors(ANCHORS)})
+
+
 @app.get("/api/verify")
 def api_verify() -> JSONResponse:
     r = verify_ledger(LEDGER, PUB)
