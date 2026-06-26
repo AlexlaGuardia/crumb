@@ -16,11 +16,14 @@ Ed25519 — audited **sound**.
 | W5 | warn | Public web demo mutates one shared on-disk ledger; `GET /` reseeds on every load and FastAPI serves sync routes on a threadpool → concurrent visitors interleave `_seed()` (append re-reads file for seq/prev_hash) = duplicate seqs / forked chain (red MISMATCH for everyone), or a read mid-rewrite 500s on a truncated line. | **fixed** 7ca7a28 | reentrant `_LEDGER_LOCK` around every ledger read/mutation in `web.py` |
 | C3 | high | `verify_delegation` chose its trust root from the token's own unverified `alg`; the HS256 dev path (symmetric `CRUMB_DELEGATION_SECRET`, held by every minting process) was unconditional → in any IdP deployment, one secret leak forges delegation for any human, and an attacker can just send HS256 to bypass the provider the whole claim rests on. | **fixed** c460e97 | require RS256 whenever `CRUMB_IDP_URL` is set (overridable `require_rs256`); refuse HS256 otherwise |
 | W6 | warn | RS256 path verified the signature but never checked `iss`. | **fixed** c460e97 | pin `iss` when `CRUMB_IDP_ISSUER` is set (default unset = stays IdP-agnostic) |
+| W7 | low | `federation.verify_chain` walked the stapled chain with no depth bound; each staple embeds the full predecessor (size grows with depth) → a malicious/buggy federated issuer could hand over an arbitrarily deep, size-amplified chain. | **fixed** 7ce1363 | `MAX_CHAIN_DEPTH=16` + `ChainTooDeep` |
 
 ## Audited sound (auth core)
 - `idp.py` token exchange: verifies the subject token (HS256 human session or prior RS256, `iss`-pinned), mints RS256 with `iss=ISSUER`, nests the actor chain (RFC 8693 §4.1) — correct.
 - Per-branch `algorithms=[...]` pinning blocks the classic RS-key-as-HS-secret confusion; `alg=none` is rejected by the HS256 allowlist. The only gap was the *unconditional availability* of the dev trust root (C3).
 - `gateway.py` pulls the human from the verified session, never model args; reconciles intent → flags unauthorized calls on the agent. Sound.
+- `mcp_server.py` bearer path: reads the actor from the token, never from model-controlled params; `verify_delegation(resource=name)` binds the token's `aud` to the called tool, so a `read_record` token can't be replayed at `export_record`. The C3 fix flows through here — under an IdP the MCP path is RS256-only. Sound.
+- `federation.py` cross-issuer verifier: each segment verified against its own issuer's key (federation set, `UntrustedIssuer` otherwise), RS256 hard-pinned (no `alg` downgrade), staple binds the exact predecessor bytes (`StapleMismatch` on swap), human continuity + append-only actor chain enforced (catches both erase and inject). Chain is strictly finite (each `prv` is a substring of its parent — no cycles). Crypto core sound; only the depth bound (W7) was missing. Now CI-gated by the 6 cross-issuer regression tests.
 
 ## Regression coverage
 `tests/test_integrity.py` (28 tests): C1 non-canonical-URL refusal (parametrized
