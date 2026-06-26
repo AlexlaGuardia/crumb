@@ -46,6 +46,30 @@ def test_canonical_prefix_is_the_real_rekor():
     assert REKOR_ENTRY_PREFIX == "https://rekor.sigstore.dev/api/v1/log/entries/"
 
 
+def test_pinned_query_refuses_redirects(monkeypatch):
+    """Host-pinning the URL is moot if the query then follows a 3xx off-host.
+    A canonical URL that 302s must fail, not chase the redirect."""
+    import urllib.error
+    from crumb import anchor
+
+    class _Redirect:
+        full_url = REKOR_ENTRY_PREFIX + "deadbeef"
+
+        def open(self, req, timeout=0):
+            raise urllib.error.HTTPError(
+                self.full_url, 302, "Found",
+                {"Location": "https://attacker.example/echo"}, None,
+            )
+
+    monkeypatch.setattr(anchor, "_REKOR_OPENER", _Redirect())
+    r = verify_checkpoint_in_rekor(
+        root="abc", tree_size=1, ts="2026-01-01T00:00:00Z",
+        rekor_url=REKOR_ENTRY_PREFIX + "deadbeef",
+    )
+    assert r["ok"] is False
+    assert r["rekor_digest"] is None  # never reached an off-host body
+
+
 # ── Merkle primitive ────────────────────────────────────────────────────────
 
 

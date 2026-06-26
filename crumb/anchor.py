@@ -43,6 +43,22 @@ REKOR = "https://rekor.sigstore.dev"
 REKOR_ENTRY_PREFIX = f"{REKOR}/api/v1/log/entries/"
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Pinning the URL host is only half the guard: urllib follows 3xx by
+    default, so a redirect off the canonical host would land the security-
+    critical Rekor query on an unvalidated server. Refuse all redirects on
+    this path — the canonical entries endpoint serves the record directly."""
+
+    def redirect_request(self, *args, **kwargs):  # noqa: D401, ANN002, ANN003
+        raise urllib.error.HTTPError(
+            args[0].full_url, 0, "refusing redirect on pinned Rekor query",
+            args[3] if len(args) > 3 else {}, None,
+        )
+
+
+_REKOR_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def _leaves(ledger_path: str = LEDGER) -> list[bytes]:
     """Leaf data = each crumb's entry_hash. The chain links them; the tree
     commits to all of them at once."""
@@ -238,7 +254,7 @@ def verify_checkpoint_in_rekor(
             headers={"Accept": "application/json"},
             method="GET",
         )
-        body = json.load(urllib.request.urlopen(req, timeout=15))
+        body = json.load(_REKOR_OPENER.open(req, timeout=15))
     except Exception as exc:
         return {
             "ok": False,
