@@ -55,6 +55,13 @@ from . import auth
 _ALGO = "RS256"
 _TTL = 60  # short-lived: one token per call, same as the single-issuer path
 
+# A real human->agent->...->tool chain is a handful of hops. Each staple embeds
+# the FULL predecessor token, so token size grows with depth and a verifier walks
+# one decode per hop. Bound it: a malicious or buggy federated issuer must not be
+# able to hand a verifier an arbitrarily deep chain to chew through. Generous
+# enough that no honest delegation comes near it.
+MAX_CHAIN_DEPTH = 16
+
 
 class CrossIssuerError(Exception):
     """Base for every way a cross-issuer chain can fail to verify. Each subclass
@@ -84,6 +91,12 @@ class ActorChainBroken(CrossIssuerError):
     """An issuer rewrote the actor chain it inherited instead of only appending to
     it. The nested `act` an outer token carries beneath its own actor must equal
     the inner token's `act` verbatim; anything else is a forged hop."""
+
+
+class ChainTooDeep(CrossIssuerError):
+    """The stapled chain exceeds `MAX_CHAIN_DEPTH`. No honest delegation is this
+    deep; refusing it stops a malicious issuer from handing the verifier an
+    arbitrarily long (and size-amplified) chain to walk."""
 
 
 def staple_hash(token: str) -> str:
@@ -244,8 +257,13 @@ def verify_chain(token: str, resource: str, federation: "Federation") -> dict:
     outer_chain = None
     current = token
     is_outer = True
+    depth = 0
 
     while True:
+        depth += 1
+        if depth > MAX_CHAIN_DEPTH:
+            raise ChainTooDeep(
+                f"stapled chain exceeds MAX_CHAIN_DEPTH={MAX_CHAIN_DEPTH}")
         iss = jwt.decode(current, options={"verify_signature": False}).get("iss")
         key = federation.key_for(iss)      # raises UntrustedIssuer if unknown
         claims = jwt.decode(

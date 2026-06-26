@@ -241,3 +241,121 @@ def test_alg_none_token_is_never_accepted(monkeypatch):
                         algorithm="none")
     with pytest.raises(jwt.PyJWTError):
         tokens.verify_delegation(forged, resource="read_record")
+
+
+# ── Cross-issuer chain: each issuer signs only its segment, human survives ────
+
+
+def _federation_setup():
+    """Two issuers (A = human's home IdP, B = tool's domain) + a verifier that
+    federates with both. Mirrors cross_issuer_demo, as a fixture for the gate."""
+    import time
+    import uuid
+
+    from crumb import auth
+    from crumb.federation import Federation, Issuer, staple_hash
+
+    idp_a = Issuer("https://idp-a.local")
+    idp_b = Issuer("https://idp-b.local")
+    verifier = Federation().trust(idp_a).trust(idp_b)
+
+    def claims(iss, sub, act, prv=None, pis=None, resource="read_record"):
+        now = int(time.time())
+        body = {"iss": iss, "sub": sub, "act": act, "aud": resource,
+                "jti": uuid.uuid4().hex, "iat": now, "exp": now + 60}
+        if prv is not None:
+            body.update({"prv": prv, "psh": staple_hash(prv), "pis": pis})
+        return body
+
+    return idp_a, idp_b, verifier, claims, auth
+
+
+def test_cross_issuer_chain_verifies_back_to_the_human():
+    from crumb.federation import Federation, verify_chain
+
+    idp_a, idp_b, verifier, _claims, auth = _federation_setup()
+    alice = auth.login("alice", directives=("read_record",))
+    tok_a = idp_a.exchange(alice.token, "planner", "read_record", Federation())
+    tok_b = idp_b.exchange(tok_a, "researcher", "read_record",
+                           Federation().trust(idp_a))
+
+    resolved = verify_chain(tok_b, "read_record", verifier)
+    assert resolved["human"] == "alice"
+    assert resolved["actor_chain"] == ["researcher", "planner"]
+    assert resolved["issuer_path"] == ["https://idp-b.local", "https://idp-a.local"]
+
+
+def test_cross_issuer_rejects_every_tamper():
+    import jwt
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    from crumb.federation import (ActorChainBroken, Federation,
+                                  HumanDiscontinuity, StapleMismatch,
+                                  UntrustedIssuer, verify_chain)
+
+    idp_a, idp_b, verifier, _c, auth = _federation_setup()
+    R = "read_record"
+    alice = auth.login("alice", directives=(R,))
+    bob = auth.login("bob", directives=(R,))
+    tok_a = idp_a.exchange(alice.token, "planner", R, Federation())
+    tok_a_bob = idp_a.exchange(bob.token, "planner", R, Federation())
+
+    def sign(body, issuer):
+        return jwt.encode(body, issuer._key, algorithm="RS256",
+                          headers={"kid": issuer.kid})
+
+    # B can mint its own segment but cannot sign as A.
+    attacker = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    forged_inner = jwt.encode(_c(idp_a.iss, "mallory", {"sub": "planner"}),
+                              attacker, algorithm="RS256")
+    forged = sign(_c(idp_b.iss, "mallory",
+                     {"sub": "researcher", "act": {"sub": "planner"}},
+                     prv=forged_inner, pis=idp_a.iss), idp_b)
+    with pytest.raises(jwt.InvalidSignatureError):
+        verify_chain(forged, R, verifier)
+
+    # Swap the stapled token but leave psh hashing the original.
+    swapped = jwt.decode(idp_b.exchange(tok_a, "researcher", R,
+                                        Federation().trust(idp_a)),
+                         options={"verify_signature": False})
+    swapped["prv"] = tok_a_bob
+    with pytest.raises(StapleMismatch):
+        verify_chain(sign(swapped, idp_b), R, verifier)
+
+    # Claim alice but staple a token A issued for bob.
+    disc = sign(_c(idp_b.iss, "alice",
+                   {"sub": "researcher", "act": {"sub": "planner"}},
+                   prv=tok_a_bob, pis=idp_a.iss), idp_b)
+    with pytest.raises(HumanDiscontinuity):
+        verify_chain(disc, R, verifier)
+
+    # Rewrite the inherited actor chain (ghost instead of planner).
+    rewrite = sign(_c(idp_b.iss, "alice",
+                      {"sub": "researcher", "act": {"sub": "ghost"}},
+                      prv=tok_a, pis=idp_a.iss), idp_b)
+    with pytest.raises(ActorChainBroken):
+        verify_chain(rewrite, R, verifier)
+
+    # An upstream issuer the verifier does not federate with.
+    idp_c = type(idp_a)("https://idp-c.rogue")
+    tok_c = idp_c.exchange(alice.token, "planner", R, Federation())
+    tok_bc = idp_b.exchange(tok_c, "researcher", R, Federation().trust(idp_c))
+    with pytest.raises(UntrustedIssuer):
+        verify_chain(tok_bc, R, verifier)
+
+
+def test_cross_issuer_refuses_an_overdeep_chain():
+    import jwt
+
+    from crumb.federation import (MAX_CHAIN_DEPTH, ChainTooDeep, Federation,
+                                  verify_chain)
+
+    idp_a, idp_b, verifier, _c, auth = _federation_setup()
+    R = "read_record"
+    alice = auth.login("alice", directives=(R,))
+    tok = idp_a.exchange(alice.token, "agent0", R, Federation())
+    # Re-staple through B well past the depth bound; each hop is validly signed.
+    for i in range(MAX_CHAIN_DEPTH + 2):
+        tok = idp_b.exchange(tok, f"agent{i+1}", R, Federation().trust(idp_a).trust(idp_b))
+    with pytest.raises(ChainTooDeep):
+        verify_chain(tok, R, verifier)
