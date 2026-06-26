@@ -13,6 +13,7 @@ Ed25519 — audited **sound**.
 | C2 | note | Remote CLI green could be over-read as operator-independent trust when only chain/sig self-consistency was proven. | **fixed** a837783 | CLI states anchor is the independent root of trust |
 | W4 | warn | Hardcoded dev signing secrets in this public repo. | **fixed** a837783 | env (`CRUMB_SESSION_SECRET`/`CRUMB_DELEGATION_SECRET`) else ephemeral per-process |
 | CI | infra | Integrity gate added in a837783 keyed on `branches:[main]`; repo default is `master` → never ran once. | **fixed** fc26e97 | trigger on `[master, main]` |
+| W5 | warn | Public web demo mutates one shared on-disk ledger; `GET /` reseeds on every load and FastAPI serves sync routes on a threadpool → concurrent visitors interleave `_seed()` (append re-reads file for seq/prev_hash) = duplicate seqs / forked chain (red MISMATCH for everyone), or a read mid-rewrite 500s on a truncated line. | **fixed** 7ca7a28 | reentrant `_LEDGER_LOCK` around every ledger read/mutation in `web.py` |
 
 ## Regression coverage
 `tests/test_integrity.py` (28 tests): C1 non-canonical-URL refusal (parametrized
