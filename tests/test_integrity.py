@@ -198,3 +198,46 @@ def test_concurrent_seed_keeps_the_chain_consistent(tmp_path, monkeypatch):
     assert not errors, errors[:3]
     rep = verify_ledger(web.LEDGER, web.PUB)
     assert rep.ok and rep.checked == len(_SEED)
+
+
+# ── Delegation trust root: a token must not pick its own verifier ────────────
+
+
+def test_hs256_dev_token_refused_once_an_idp_is_configured(monkeypatch):
+    """The dev HS256 path verifies with a SYMMETRIC secret every minting process
+    holds. In a deployment with a real IdP, accepting it means one secret leak
+    forges delegation for any human, and an attacker just sends HS256 to skip the
+    provider. Configuring an IdP must flip the resource to RS256-only."""
+    import jwt
+    from crumb import tokens
+
+    monkeypatch.delenv("CRUMB_IDP_URL", raising=False)
+    dev_token = tokens.mint_delegation("alice", "support-agent", "read_record")
+    assert jwt.get_unverified_header(dev_token)["alg"] == "HS256"
+
+    # No IdP: the offline demo path still works.
+    claims = tokens.verify_delegation(dev_token, resource="read_record")
+    assert claims["sub"] == "alice"
+
+    # IdP configured: the same HS256 token is now refused, not silently trusted.
+    monkeypatch.setenv("CRUMB_IDP_URL", "https://idp.example")
+    with pytest.raises(jwt.InvalidAlgorithmError):
+        tokens.verify_delegation(dev_token, resource="read_record")
+
+    # And an explicit require_rs256 pins it regardless of env.
+    monkeypatch.delenv("CRUMB_IDP_URL", raising=False)
+    with pytest.raises(jwt.InvalidAlgorithmError):
+        tokens.verify_delegation(dev_token, resource="read_record", require_rs256=True)
+
+
+def test_alg_none_token_is_never_accepted(monkeypatch):
+    """The other half of 'token picks its verifier': an alg=none token must not
+    sail through the dev branch on the strength of having no signature."""
+    import jwt
+    from crumb import tokens
+
+    monkeypatch.delenv("CRUMB_IDP_URL", raising=False)
+    forged = jwt.encode({"sub": "attacker", "aud": "read_record"}, key="",
+                        algorithm="none")
+    with pytest.raises(jwt.PyJWTError):
+        tokens.verify_delegation(forged, resource="read_record")

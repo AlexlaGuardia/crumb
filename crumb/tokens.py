@@ -199,16 +199,35 @@ def _rs256_public_key(token: str):
     return _PRIVATE_KEY.public_key()
 
 
-def verify_delegation(token: str, resource: str) -> dict:
-    """Verify a token for a given resource; return its claims. Transport- and
-    path-agnostic: it reads the token's `alg` and verifies accordingly.
+def _issuer_opt() -> dict:
+    """Pin the expected issuer when the operator declares one (CRUMB_IDP_ISSUER).
+    Left unset by default so Crumb stays IdP-agnostic (Okta/Keycloak/Zitadel each
+    have their own `iss`); when set, the RS256 path additionally rejects a token
+    whose `iss` doesn't match, not just one signed by the wrong key."""
+    iss = os.environ.get("CRUMB_IDP_ISSUER")
+    return {"issuer": iss} if iss else {}
+
+
+def verify_delegation(token: str, resource: str, *,
+                      require_rs256: bool | None = None) -> dict:
+    """Verify a token for a given resource; return its claims.
 
       - RS256 -> a provider-issued token; verify against the IdP's public key
         (JWKS). No shared secret — the resource trusts the provider, not the minter.
       - HS256 -> the dev path; verify with the local dev key.
 
+    The trust root must NOT be chosen by the token. The dev HS256 path verifies
+    with `CRUMB_DELEGATION_SECRET`, a SYMMETRIC secret every minting process
+    holds — acceptable for an offline demo, fatal in production: one leak forges
+    delegation for any human, and an attacker simply sends an HS256 token to
+    sidestep the provider entirely. So whenever an IdP is configured (the
+    deployment opted into provider-signed identity) we require RS256 and refuse
+    HS256 outright. `require_rs256` overrides the default for callers that want to
+    pin it explicitly either way.
+
     Works for both delegation tokens (with `act`) and service-account tokens
     (without), under either signing path."""
+    require = bool(_idp_url()) if require_rs256 is None else require_rs256
     alg = jwt.get_unverified_header(token).get("alg")
     if alg == "RS256":
         return jwt.decode(
@@ -216,5 +235,12 @@ def verify_delegation(token: str, resource: str) -> dict:
             _rs256_public_key(token),
             algorithms=["RS256"],
             audience=resource,
+            **_issuer_opt(),
+        )
+    if require:
+        raise jwt.InvalidAlgorithmError(
+            f"RS256 required (IdP configured) — refusing {alg!r} dev token at "
+            f"resource {resource!r}; the shared-secret path is not a trust root "
+            "in production"
         )
     return jwt.decode(token, _DEV_SECRET, algorithms=[_ALGO], audience=resource)
