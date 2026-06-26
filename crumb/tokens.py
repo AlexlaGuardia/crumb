@@ -26,12 +26,24 @@ stands either way: identity is carried in a signed token, never in model output.
 from __future__ import annotations
 
 import os
+import secrets
+import sys
 import time
 import uuid
 
 import jwt
 
-_DEV_SECRET = "crumb-delegation-dev-key-not-for-production"
+# Delegation signing key. Demo-only: from CRUMB_DELEGATION_SECRET, else an
+# ephemeral per-process secret so the public repo ships no usable key. Mint and
+# verify happen in one process, so a per-process secret is sufficient.
+_DEV_SECRET = os.environ.get("CRUMB_DELEGATION_SECRET")
+if not _DEV_SECRET:
+    _DEV_SECRET = secrets.token_hex(32)
+    print(
+        "crumb.tokens: CRUMB_DELEGATION_SECRET unset — using an ephemeral "
+        "per-process secret. Set it for stable cross-process delegation.",
+        file=sys.stderr,
+    )
 _ALGO = "HS256"
 _TTL = 60  # short-lived: one token per call
 

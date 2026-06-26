@@ -191,6 +191,7 @@ def _print_report(result: dict) -> int:
         return 1
 
     source = result.get("source", "")
+    remote = source.startswith("http://") or source.startswith("https://")
     print(f"\nCrumb — verifying {source}\n")
 
     all_ok = True
@@ -240,6 +241,18 @@ def _print_report(result: dict) -> int:
 
     verdict = "VERIFIED" if all_ok else "MISMATCH"
     print(f"\n  {verdict}\n")
+
+    if remote:
+        # The pubkey and ledger both came from the server under verification, so
+        # "chain & signatures" only proves that server is internally consistent
+        # with its own key — a forged server passes it trivially. Independence
+        # comes solely from the public anchor (a log the operator can't control).
+        # Be explicit so a green result isn't read as more than it is.
+        print(
+            "  note: pubkey fetched from the server under test — chain & signature\n"
+            "        checks prove only self-consistency. Operator-independent trust\n"
+            "        comes from the public anchor; pin the pubkey out-of-band for more.\n"
+        )
     return 0 if all_ok else 1
 
 

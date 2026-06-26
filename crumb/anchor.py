@@ -37,6 +37,10 @@ LEDGER = "data/ledger.jsonl"
 ANCHORS = "data/anchors.jsonl"
 ANCHOR_KEY = "data/anchor_ec.key"
 REKOR = "https://rekor.sigstore.dev"
+# Canonical public-log entry prefix. The independent check is only independent if
+# it queries THIS host — a server under verification must not be able to redirect
+# the verifier to an attacker-controlled "Rekor" that echoes any digest back.
+REKOR_ENTRY_PREFIX = f"{REKOR}/api/v1/log/entries/"
 
 
 def _leaves(ledger_path: str = LEDGER) -> list[bytes]:
@@ -206,6 +210,27 @@ def verify_checkpoint_in_rekor(
 
     cp = {"root": root, "tree_size": tree_size, "ts": ts}
     digest = hashlib.sha256(canonical(cp)).hexdigest()
+
+    # Pin the host. In the remote path `rekor_url` arrives inside the anchor
+    # record served by the very party we're verifying. If we followed it blindly,
+    # a malicious operator points us at their own server, which returns a body
+    # echoing our digest, and all three layers go green — defeating the whole
+    # "verify without trusting the operator" claim. Refuse anything that is not
+    # the canonical Sigstore Rekor entries endpoint.
+    if not rekor_url.startswith(REKOR_ENTRY_PREFIX):
+        return {
+            "ok": False,
+            "logIndex": None,
+            "integratedTime": None,
+            "rekor_url": rekor_url,
+            "digest": digest,
+            "rekor_digest": None,
+            "reason": (
+                f"refusing non-canonical Rekor URL (must start with "
+                f"{REKOR_ENTRY_PREFIX}); the anchor points the verifier at a log "
+                f"the operator may control"
+            ),
+        }
 
     try:
         req = urllib.request.Request(

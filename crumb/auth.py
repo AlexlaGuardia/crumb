@@ -13,14 +13,27 @@ model never gets a say in who the human is.
 
 from __future__ import annotations
 
+import os
+import secrets
+import sys
 import time
 from dataclasses import dataclass
 
 import jwt
 
-# Dev-only signing secret. In prod the IdP holds the keys; we'd verify its
-# tokens, not mint our own. Never ship a hardcoded secret — see SPEC §9.
-_DEV_SECRET = "crumb-dev-secret-not-for-production"
+# Signing secret. In prod the IdP holds the keys; we'd verify its tokens, not
+# mint our own (see SPEC §9). For the demo, take it from CRUMB_SESSION_SECRET; if
+# unset, generate an ephemeral per-process secret so the public repo ships NO
+# usable signing key — tokens just don't survive a restart, fine for a demo. A
+# deployment that needs stable sessions sets the env var.
+_DEV_SECRET = os.environ.get("CRUMB_SESSION_SECRET")
+if not _DEV_SECRET:
+    _DEV_SECRET = secrets.token_hex(32)
+    print(
+        "crumb.auth: CRUMB_SESSION_SECRET unset — using an ephemeral per-process "
+        "secret (tokens won't survive restart). Set it for stable sessions.",
+        file=sys.stderr,
+    )
 _ALGO = "HS256"
 _SESSION_TTL = 3600  # seconds
 
