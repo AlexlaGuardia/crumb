@@ -145,3 +145,56 @@ def test_find_unauthorized_flags_hijacked_calls(tmp_path):
     p.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
     flagged = find_unauthorized(str(p))
     assert len(flagged) == 1 and flagged[0]["tool"] == "wire_money"
+
+
+# ── Concurrency: the public demo shares one ledger across all visitors ───────
+
+
+def test_concurrent_seed_keeps_the_chain_consistent(tmp_path, monkeypatch):
+    """`GET /` reseeds on every load and FastAPI serves sync routes on a
+    threadpool, so concurrent visitors drive interleaved seeds. Unsynchronized,
+    each append() re-reads the file for seq/prev_hash → duplicate seqs, a forked
+    chain, and a red MISMATCH for everyone. The lock must keep every observed
+    state consistent: any non-empty read has contiguous seqs and the final
+    ledger verifies clean."""
+    import threading
+
+    from crumb import web
+    from crumb.verify import verify_ledger
+    from crumb.web import _SEED
+
+    monkeypatch.setattr(web, "LEDGER", str(tmp_path / "ledger.jsonl"))
+    monkeypatch.setattr(web, "KEY", str(tmp_path / "ledger.key"))
+    monkeypatch.setattr(web, "PUB", str(tmp_path / "ledger.pub"))
+    web._seed()  # create the key + a first clean ledger
+
+    errors: list[Exception] = []
+    barrier = threading.Barrier(16)
+
+    def seed_worker():
+        barrier.wait()
+        for _ in range(10):
+            web._seed()
+
+    def read_worker():
+        barrier.wait()
+        for _ in range(40):
+            try:
+                rows = web._read_ledger()
+                seqs = [r["seq"] for r in rows]
+                # A read must never observe a torn write: when entries are
+                # present they form the contiguous prefix 0..n with no dupes.
+                assert seqs == list(range(len(seqs))), seqs
+            except Exception as exc:  # truncated JSON line, dup seq, etc.
+                errors.append(exc)
+
+    threads = [threading.Thread(target=seed_worker) for _ in range(8)] + \
+              [threading.Thread(target=read_worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, errors[:3]
+    rep = verify_ledger(web.LEDGER, web.PUB)
+    assert rep.ok and rep.checked == len(_SEED)

@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
@@ -48,25 +49,36 @@ _SEED = [
 
 app = FastAPI(title="Crumb", docs_url=None, redoc_url=None)
 
+# The demo mutates ONE shared on-disk ledger and `GET /` reseeds on every load.
+# FastAPI runs sync routes on a threadpool, so two concurrent visitors can drive
+# two interleaved seeds (each append() derives seq/prev_hash by re-reading the
+# file) → duplicate seq, a forked chain, a red MISMATCH for everyone — or a read
+# landing mid-rewrite → a truncated JSON line and a 500. Serialize every ledger
+# read/mutation so the file is only ever observed in a consistent state.
+# Reentrant: `/` and api_seed call _seed() while already holding the lock.
+_LEDGER_LOCK = threading.RLock()
+
 
 def _gateway() -> Gateway:
     return Gateway(ledger=Ledger(path=LEDGER, key_path=KEY), agent_id=AGENT_ID)
 
 
 def _seed() -> None:
-    gw = _gateway()
-    gw.ledger.reset()
-    for who, transport, record_id, ts in _SEED:
-        session = auth.login(who, directives=("read_record",))
-        call = ToolCall(name="read_record", arguments={"record_id": record_id})
-        gw.dispatch(session, call, transport=transport, ts=ts)
+    with _LEDGER_LOCK:
+        gw = _gateway()
+        gw.ledger.reset()
+        for who, transport, record_id, ts in _SEED:
+            session = auth.login(who, directives=("read_record",))
+            call = ToolCall(name="read_record", arguments={"record_id": record_id})
+            gw.dispatch(session, call, transport=transport, ts=ts)
 
 
 def _read_ledger() -> list[dict]:
-    p = Path(LEDGER)
-    if not p.exists():
-        return []
-    return [json.loads(ln) for ln in p.read_text().splitlines() if ln.strip()]
+    with _LEDGER_LOCK:
+        p = Path(LEDGER)
+        if not p.exists():
+            return []
+        return [json.loads(ln) for ln in p.read_text().splitlines() if ln.strip()]
 
 
 @app.on_event("startup")
@@ -131,7 +143,8 @@ def api_anchors() -> JSONResponse:
 
 @app.get("/api/verify")
 def api_verify() -> JSONResponse:
-    r = verify_ledger(LEDGER, PUB)
+    with _LEDGER_LOCK:
+        r = verify_ledger(LEDGER, PUB)
     return JSONResponse({"ok": r.ok, "checked": r.checked, "issues": r.issues})
 
 
@@ -145,24 +158,26 @@ def api_seed() -> JSONResponse:
 def api_tamper() -> JSONResponse:
     """Edit a past crumb the way an insider would — reassign someone else's
     access to themselves. The data changes; the math won't. verify catches it."""
-    lines = Path(LEDGER).read_text().splitlines()
-    target = next((i for i, ln in enumerate(lines)
-                   if json.loads(ln)["actor_identity"] == "bob"), None)
-    if target is None:
-        return JSONResponse({"tampered": None})
-    rec = json.loads(lines[target])
-    original = rec["actor_identity"]
-    rec["actor_identity"] = "alice"  # frame alice for bob's access
-    lines[target] = json.dumps(rec)
-    Path(LEDGER).write_text("\n".join(lines) + "\n")
+    with _LEDGER_LOCK:
+        lines = Path(LEDGER).read_text().splitlines()
+        target = next((i for i, ln in enumerate(lines)
+                       if json.loads(ln)["actor_identity"] == "bob"), None)
+        if target is None:
+            return JSONResponse({"tampered": None})
+        rec = json.loads(lines[target])
+        original = rec["actor_identity"]
+        rec["actor_identity"] = "alice"  # frame alice for bob's access
+        lines[target] = json.dumps(rec)
+        Path(LEDGER).write_text("\n".join(lines) + "\n")
     return JSONResponse({"tampered": rec["seq"], "from": original, "to": "alice"})
 
 
 @app.get("/api/anchor")
 def api_anchor() -> JSONResponse:
     """Anchor status: does the current ledger still match the root we published?"""
-    v = anchor.verify_anchors(LEDGER, ANCHORS)
-    latest = (anchor.read_anchors(ANCHORS) or [{}])[-1]
+    with _LEDGER_LOCK:
+        v = anchor.verify_anchors(LEDGER, ANCHORS)
+        latest = (anchor.read_anchors(ANCHORS) or [{}])[-1]
     rk = latest.get("rekor", {})
     return JSONResponse({**v, "rekor_url": rk.get("url"), "logIndex": rk.get("logIndex")})
 
@@ -206,22 +221,23 @@ def api_idp() -> JSONResponse:
 def api_rollback() -> JSONResponse:
     """The key-holder's attack: rewrite a crumb, then re-chain and re-sign EVERY
     entry. The chain verifies clean afterward — only the anchor catches it."""
-    key = serialization.load_pem_private_key(Path(KEY).read_bytes(), password=None)
-    rows = [json.loads(ln) for ln in Path(LEDGER).read_text().splitlines() if ln.strip()]
-    target = next((i for i, r in enumerate(rows) if r["actor_identity"] == "bob"), None)
-    if target is None:
-        return JSONResponse({"rolledBack": None})
-    rows[target]["actor_identity"] = "alice"
-    prev = "0" * 64
-    for r in rows:
-        core = {k: v for k, v in r.items() if k not in ("entry_hash", "signature")}
-        core["prev_hash"] = prev
-        eh = hashlib.sha256(canonical(core)).hexdigest()
-        r.clear(); r.update(core)
-        r["entry_hash"] = eh
-        r["signature"] = "ed25519:" + key.sign(eh.encode()).hex()
-        prev = eh
-    Path(LEDGER).write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    with _LEDGER_LOCK:
+        key = serialization.load_pem_private_key(Path(KEY).read_bytes(), password=None)
+        rows = [json.loads(ln) for ln in Path(LEDGER).read_text().splitlines() if ln.strip()]
+        target = next((i for i, r in enumerate(rows) if r["actor_identity"] == "bob"), None)
+        if target is None:
+            return JSONResponse({"rolledBack": None})
+        rows[target]["actor_identity"] = "alice"
+        prev = "0" * 64
+        for r in rows:
+            core = {k: v for k, v in r.items() if k not in ("entry_hash", "signature")}
+            core["prev_hash"] = prev
+            eh = hashlib.sha256(canonical(core)).hexdigest()
+            r.clear(); r.update(core)
+            r["entry_hash"] = eh
+            r["signature"] = "ed25519:" + key.sign(eh.encode()).hex()
+            prev = eh
+        Path(LEDGER).write_text("\n".join(json.dumps(r) for r in rows) + "\n")
     return JSONResponse({"rolledBack": rows[target]["seq"]})
 
 
