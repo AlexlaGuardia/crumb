@@ -14,6 +14,13 @@ Ed25519 — audited **sound**.
 | W4 | warn | Hardcoded dev signing secrets in this public repo. | **fixed** a837783 | env (`CRUMB_SESSION_SECRET`/`CRUMB_DELEGATION_SECRET`) else ephemeral per-process |
 | CI | infra | Integrity gate added in a837783 keyed on `branches:[main]`; repo default is `master` → never ran once. | **fixed** fc26e97 | trigger on `[master, main]` |
 | W5 | warn | Public web demo mutates one shared on-disk ledger; `GET /` reseeds on every load and FastAPI serves sync routes on a threadpool → concurrent visitors interleave `_seed()` (append re-reads file for seq/prev_hash) = duplicate seqs / forked chain (red MISMATCH for everyone), or a read mid-rewrite 500s on a truncated line. | **fixed** 7ca7a28 | reentrant `_LEDGER_LOCK` around every ledger read/mutation in `web.py` |
+| C3 | high | `verify_delegation` chose its trust root from the token's own unverified `alg`; the HS256 dev path (symmetric `CRUMB_DELEGATION_SECRET`, held by every minting process) was unconditional → in any IdP deployment, one secret leak forges delegation for any human, and an attacker can just send HS256 to bypass the provider the whole claim rests on. | **fixed** c460e97 | require RS256 whenever `CRUMB_IDP_URL` is set (overridable `require_rs256`); refuse HS256 otherwise |
+| W6 | warn | RS256 path verified the signature but never checked `iss`. | **fixed** c460e97 | pin `iss` when `CRUMB_IDP_ISSUER` is set (default unset = stays IdP-agnostic) |
+
+## Audited sound (auth core)
+- `idp.py` token exchange: verifies the subject token (HS256 human session or prior RS256, `iss`-pinned), mints RS256 with `iss=ISSUER`, nests the actor chain (RFC 8693 §4.1) — correct.
+- Per-branch `algorithms=[...]` pinning blocks the classic RS-key-as-HS-secret confusion; `alg=none` is rejected by the HS256 allowlist. The only gap was the *unconditional availability* of the dev trust root (C3).
+- `gateway.py` pulls the human from the verified session, never model args; reconciles intent → flags unauthorized calls on the agent. Sound.
 
 ## Regression coverage
 `tests/test_integrity.py` (28 tests): C1 non-canonical-URL refusal (parametrized
