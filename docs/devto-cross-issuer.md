@@ -1,19 +1,17 @@
 ---
 title: "An AI agent acted across two companies. Whose audit log knows which human?"
 published: false
-description: "Single-issuer agent delegation is solved. The moment the chain crosses into a partner's identity provider, RFC 8693 throws the upstream signature away. Here is how I kept the human provable across the boundary in Crumb."
+description: "Single-issuer agent delegation is solved. The moment the chain crosses into a partner's identity provider, RFC 8693 throws the upstream signature away. Here's how I kept the human provable across the boundary in Crumb."
 tags: ai, security, oauth, mcp
 ---
-
-Here is a setup that is going to be normal soon, if it isn't already.
 
 Alice logs into her company's tools through their identity provider. She points an agent at a task. That agent hands part of the work to a sub-agent, and the sub-agent calls a tool that lives in a partner company's system, behind a *different* identity provider. The tool does something it shouldn't. An auditor pulls the record.
 
 Whose log knows it was alice?
 
-Not the agent's. The agent is a process; it can claim to be anyone. Not the model's either, which reads whatever it was handed and has no idea which human is behind the session. The honest answer in most deployments today is that the partner's system can prove *a bot* called it, and can prove *which company's bot*, and then the trail goes cold. The person who actually directed the action dissolves into "some agent at the vendor."
+Not the agent's. The agent is a process; it can claim to be anyone. Not the model's either, which reads whatever it was handed and has no idea which human is behind the session. The honest answer in most deployments today is that the partner's system can prove *a bot* called it, and can prove *which company's bot*. Then the trail goes cold. The person who actually directed the action dissolves into "some agent at the vendor."
 
-I have been building [Crumb](https://crumb.alexlaguardia.dev) to refuse that outcome: a tamper-evident record that binds the individual human behind an agent's tool call, verifiable by someone who does not have to trust whoever ran the agent. Within a single identity provider, that chain was already working. This post is about the part that wasn't, and why it took longer than I expected.
+I have been building [Crumb](https://crumb.alexlaguardia.dev) to refuse that outcome: a tamper-evident record that binds the actual person behind an agent's tool call, verifiable by someone who does not have to trust whoever ran the agent. Within a single identity provider, that chain was already working. This post is about the part that wasn't, and why it took longer than I expected.
 
 ## The single-issuer case was the easy half
 
@@ -42,7 +40,7 @@ So `planner`, holding a token IdP A signed, needs the call into B's domain to ca
 
 And right there is the problem, sitting in plain sight in the spec. When B does that exchange, it mints a token signed *only by B* and drops A's signature on the floor. The new token says `sub: alice` because B copied it across, but the cryptographic proof that A authenticated alice is gone. Downstream, all you hold is B's word: "A told me it was alice."
 
-For most systems that is fine, because most systems were already trusting B. But Crumb's entire reason to exist is to let an auditor verify *without* trusting the operator. A cross-issuer hop that resolves to "trust B" puts the trust-me point right back in the middle of the chain I was trying to make checkable. It is the one thing I am not allowed to wave away.
+For most systems that is fine, because most systems were already trusting B. But Crumb's entire reason to exist is to let an auditor verify *without* trusting the operator. A cross-issuer hop that resolves to "trust B" puts the trust-me point right back in the middle of the chain I was trying to make checkable. It's the one thing I can't wave away.
 
 ## Stapling: carry the signature across, don't reissue it
 
@@ -77,21 +75,21 @@ Each rule maps to one way a dishonest issuer could try to cheat:
 
 ## What it refuses
 
-The part I care about most is the negative space. A mechanism that only demonstrates the happy path is a demo, not a security property. So the demo verifies the real chain across two issuers, and then it tries to break it five ways and shows each one failing by name.
+The part I care about most is the negative space. A mechanism that only shows the happy path hasn't proven anything. So the demo verifies the real chain across two issuers, and then it tries to break it five ways and shows each one failing by name.
 
 The sharpest of the five: a *malicious B* tries to fabricate an upstream human. It controls its own signing key, so it mints a perfectly valid B token that says it is acting for `mallory`, and it staples a forged "A token" that also names mallory. B can sign its own segment all day. What it cannot do is sign as A. The verifier checks the stapled segment against A's real key, the forgery fails there, and B's attempt to invent a human it was never handed dies at the boundary.
 
 ```
 3. malicious B forges an upstream human (mallory)
-   forged upstream    rejected (InvalidSignature) — B can't sign as A
+   forged upstream    rejected (InvalidSignature): B can't sign as A
 4. swap the stapled provenance (psh left stale)
-   swapped provenance rejected (StapleMismatch) — psh pins one predecessor
+   swapped provenance rejected (StapleMismatch): psh pins one predecessor
 5. B claims alice but staples bob's token
-   human discontinuity rejected (HumanDiscontinuity) — same human or nothing
+   human discontinuity rejected (HumanDiscontinuity): same human or nothing
 6. B rewrites the inherited actor chain
-   rewritten chain    rejected (ActorChainBroken) — append-only, no rewrite
+   rewritten chain    rejected (ActorChainBroken): append-only, no rewrite
 7. upstream from an unfederated issuer
-   unfederated issuer rejected (UntrustedIssuer) — verifier trusts its own set
+   unfederated issuer rejected (UntrustedIssuer): verifier trusts its own set
 ```
 
 That last one matters more than it looks. Even when B chooses to accept some sketchy third issuer C and builds a chain on it, the verifier makes its *own* trust decision. B vouching for C buys C nothing. The verifier trusts its set, not B's.
@@ -100,11 +98,11 @@ That last one matters more than it looks. Even when B chooses to accept some ske
 
 Here is the boundary, stated plainly, because pretending it isn't there is exactly the tell I am trying to avoid.
 
-This is not a new standard. The `prv` and `psh` staple claims are a Crumb convention. There is no RFC that defines them, and if two vendors wanted to interoperate this way they would have to agree on the format first. And the whole thing still rests on a federation trust set. Somebody, somewhere, decides which issuers they accept. I did not make that decision disappear.
+This isn't a new standard. The `prv` and `psh` staple claims are a Crumb convention. There is no RFC that defines them, and if two vendors wanted to interoperate this way they would have to agree on the format first. And the whole thing still rests on a federation trust set. Somebody, somewhere, decides which issuers they accept. I didn't make that decision disappear.
 
-What I did was make it the *only* thing you have to decide, and make everything downstream of it checkable. You pick your trusted issuers, once, explicitly, in an object you can read. After that, no single issuer in the chain gets to assert the human on its own word. Each one signs only its own segment, and the verifier re-checks all of them. The federation set is the assumption. The cryptography is not.
+What I did was make it the *only* thing you have to decide, and make everything downstream of it checkable. You pick your trusted issuers once, explicitly, in an object you can read. After that no single issuer gets to assert the human on its own word. Each one signs only its own segment, and the verifier re-checks all of them.
 
-Cross-issuer identity does not have a trust-free answer. The question gets smaller: who do you federate with. Everything after that is checkable.
+There's still no trust-free answer for cross-issuer identity. Just a smaller question: who do you federate with.
 
 ## Try it
 
