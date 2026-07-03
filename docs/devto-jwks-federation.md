@@ -67,11 +67,21 @@ So the two ways it can refuse stay distinct, and I kept them named:
 
 The first is a stranger. The second is a trusted party holding up a key that isn't theirs. Collapsing those two into one "nope" would throw away the only information a debugger actually wants.
 
+## Rotation's quiet twin: revocation
+
+Rotation is a key showing up. There is a nastier version of the same problem, which is a key going away. An issuer's signing key gets compromised, and the issuer pulls it from its JWKS to kill it. Every token still floating around signed by that key should stop verifying, now.
+
+Fetching by `kid` does not, on its own, get you this. A verifier that fetched a key once and cached it will keep honoring that `kid` forever, because a `kid` it has already seen never sends it back to look again. Rotation is handled by the refetch on the *unseen* kid. Revocation is about a kid you have very much seen and should stop trusting. The cache that made rotation cheap is exactly what keeps a dead key alive.
+
+So a fetched key gets a shelf life. It is trusted for a bounded window, a TTL, and once that lapses the cache is stale and has to be reconfirmed against the live JWKS before it is served again. When the issuer has dropped the compromised key, the reconfirm comes back without it, and tokens signed by it start failing. Revocation lands within one TTL window rather than never.
+
+The reconfirm has to fail closed, and this is the part worth slowing down on. If the JWKS fetch fails and the verifier shrugs and serves its stale cache anyway, then anyone who can stall that fetch just bought the revoked key an extension for as long as they can keep the endpoint unreachable. That is the whole revocation, handed back to the attacker through the availability door. So a stale cache that can't be reconfirmed refuses. The cost is that the issuer's JWKS being reachable is now part of your verification path, which is the honest price of checking against a live issuer instead of a photograph of one.
+
 ## What I am not going to oversell
 
 TLS is doing real load-bearing work now, and I should say that out loud instead of letting it hide. "The keys come from the issuer's own endpoint" is only as true as your certificate validation. Point this at an issuer over plain HTTP, or disable cert checks because a test was annoying, and the trust boundary I just drew has a hole straight through it. In the demo below the issuers run on localhost over plain HTTP, which is fine for showing the mechanism and would be a real hole in production. The honest claim is "keys fetched from the issuer over an authenticated channel," and the authenticated part is a requirement, not a decoration.
 
-There's more I haven't built. This follows rotation but does nothing clever about *revocation*: an issuer pulling a key it wants dead faster than a cache expires. And a verifier that fetches is a verifier that can be made to wait; anything reaching across the network wants timeouts and a failure mode that fails closed. Those are real, and they are not done.
+The revocation window is a window, not an instant. A key stays honored for up to a TTL after the issuer kills it. Tighten the TTL and revocation lands faster, at the cost of more fetches; the genuinely instant version wants push invalidation, not polling, and I haven't built that. There's also no retry or backoff around a flapping issuer yet, just a plain timeout and a fail-closed refusal. A verifier that fetches is a verifier that can be made to wait, and a production one wants more grace around that than this has. Real, and not done.
 
 What is done is the thing that was actually broken: the trust set no longer freezes a key it has no business freezing. You name the issuers. Their keys stay theirs, fetched live, followed through rotation, and never once sourced from the party you're auditing.
 
@@ -82,7 +92,7 @@ git clone https://github.com/AlexlaGuardia/crumb
 python -m crumb.jwks_federation_demo
 ```
 
-It stands up two identity providers on real ports, each serving its own discovery and JWKS endpoints. A verifier that pinned nothing names the two issuers, fetches their keys live, and verifies a delegation chain back to the human. Then one issuer rotates its signing key, and the same verifier follows the rotation with a single refetch and keeps verifying. Last, a chain built on an issuer the verifier never named gets refused, because a live endpoint was never what earned trust.
+It stands up two identity providers on real ports, each serving its own discovery and JWKS endpoints. A verifier that pinned nothing names the two issuers, fetches their keys live, and verifies a delegation chain back to the human. Then one issuer rotates its signing key, and the same verifier follows the rotation with a single refetch and keeps verifying. It revokes a key and shows a token signed by it still passing inside the TTL window, then getting refused once the cache reconfirms and the key is gone. And a chain built on an issuer the verifier never named gets refused, because a live endpoint was never what earned trust.
 
 The rest of Crumb, including the cross-issuer stapling this builds on, is at [crumb.alexlaguardia.dev](https://crumb.alexlaguardia.dev).
 

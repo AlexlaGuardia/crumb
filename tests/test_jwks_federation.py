@@ -21,6 +21,7 @@ import pytest
 from crumb import auth
 from crumb.federation import (
     Federation,
+    IssuerUnreachable,
     Issuer,
     UnknownSigningKey,
     UntrustedIssuer,
@@ -150,6 +151,64 @@ def test_unknown_kid_is_refused_not_guessed():
                         headers={"kid": "ghost-kid"})
     with pytest.raises(UnknownSigningKey):
         verify_chain(forged, RESOURCE, fed)
+
+
+def test_revoked_key_is_trusted_within_ttl_then_dropped():
+    """A key the issuer removes from its JWKS keeps verifying from cache until the
+    TTL lapses (the bounded, honest staleness window), then stops once the cache is
+    reconfirmed against the live JWKS and the key is gone. Deterministic via an
+    injected clock; the fetch count proves the cache isn't re-hit prematurely."""
+    host = _JWKSHost("https://idp-a.local")
+    now = [0.0]
+    fed = Federation().trust_jwks_uri(
+        host.iss, host.jwks_url, fetch=host.fetch, ttl=10, clock=lambda: now[0])
+
+    token = host.issuer.exchange(_human().token, "planner", RESOURCE, Federation())
+    assert verify_chain(token, RESOURCE, fed)["human"] == "alice"
+    assert host.hits["jwks"] == 1
+
+    # The issuer rotates its key, which REVOKES the old kid from the served JWKS.
+    host.rotate()
+
+    # Still inside the TTL: the old key sits in cache and keeps verifying. No
+    # refetch yet, so revocation hasn't propagated. This window is the honest cost.
+    now[0] = 9.0
+    assert verify_chain(token, RESOURCE, fed)["human"] == "alice"
+    assert host.hits["jwks"] == 1  # served from cache, not reconfirmed
+
+    # Past the TTL: the cache is reconfirmed, the revoked kid is gone, and a token
+    # signed by it no longer verifies.
+    now[0] = 11.0
+    with pytest.raises(UnknownSigningKey):
+        verify_chain(token, RESOURCE, fed)
+    assert host.hits["jwks"] == 2  # exactly one reconfirm fetch
+
+
+def test_stale_cache_fails_closed_when_issuer_unreachable():
+    """When the TTL lapses and the reconfirm fetch fails, the source refuses rather
+    than serve the stale cache — fail-closed, so a stalled JWKS endpoint can't keep
+    a revoked key alive."""
+    host = _JWKSHost("https://idp-a.local")
+    now = [0.0]
+    down = {"flag": False}
+
+    def flaky_fetch(url):
+        if down["flag"]:
+            raise ConnectionError("issuer JWKS unreachable")
+        return host.fetch(url)
+
+    fed = Federation().trust_jwks_uri(
+        host.iss, host.jwks_url, fetch=flaky_fetch, ttl=10, clock=lambda: now[0])
+
+    token = host.issuer.exchange(_human().token, "planner", RESOURCE, Federation())
+    assert verify_chain(token, RESOURCE, fed)["human"] == "alice"
+
+    # Issuer goes dark, TTL lapses: the reconfirm can't run, so we refuse to keep
+    # vouching for the cached key rather than serve it unconfirmed.
+    down["flag"] = True
+    now[0] = 11.0
+    with pytest.raises(IssuerUnreachable):
+        verify_chain(token, RESOURCE, fed)
 
 
 def test_cli_manifest_parses_pem_and_url_sources(tmp_path):

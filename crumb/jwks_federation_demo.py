@@ -35,7 +35,13 @@ import uvicorn
 from fastapi import FastAPI
 
 from . import auth
-from .federation import Federation, Issuer, UnknownSigningKey, UntrustedIssuer, verify_chain
+from .federation import (
+    Federation,
+    Issuer,
+    UnknownSigningKey,
+    UntrustedIssuer,
+    verify_chain,
+)
 
 RESOURCE = "read_record"
 
@@ -150,9 +156,31 @@ def main() -> None:
         finally:
             srv_c.should_exit = True
 
+        # Rotation picks up a key that APPEARS. Revocation is the opposite: a key
+        # that DISAPPEARS must stop verifying. A short-TTL verifier reconfirms A's
+        # JWKS once the cache lapses, so a revoked key drops out.
+        print("\n5. A revokes a signing key (short-TTL verifier)")
+        v_short = Federation().trust_discovery(
+            idp_a.iss, ttl=1.0,
+            discovery_url=f"{idp_a.base}/.well-known/openid-configuration")
+        tok_rev = idp_a.issuer.exchange(
+            auth.login("alice", directives=(RESOURCE,)).token, "planner", RESOURCE, Federation())
+        assert verify_chain(tok_rev, RESOURCE, v_short)["human"] == "alice"
+        idp_a.rotate()  # the kid tok_rev was signed with is now gone from A's JWKS
+        # Inside the TTL the cached key still verifies — the bounded staleness window.
+        assert verify_chain(tok_rev, RESOURCE, v_short)["human"] == "alice"
+        print("   inside TTL   still verifies (cached) — revocation not yet propagated")
+        time.sleep(1.2)  # let the TTL lapse
+        try:
+            verify_chain(tok_rev, RESOURCE, v_short)
+            print("   after TTL    UNEXPECTEDLY ACCEPTED  <-- bug")
+        except UnknownSigningKey:
+            print("   after TTL    rejected (UnknownSigningKey) — reconfirmed, key is gone")
+
         print("\nThe verifier fetched every key from the issuer that owns it, followed a")
-        print("rotation with no redeploy, and still trusted only the issuers it named.")
-        print("Pinning was never required; trusting the log-holder never happened.")
+        print("rotation with no redeploy, dropped a revoked key within its TTL, and still")
+        print("trusted only the issuers it named. Pinning was never required; trusting the")
+        print("log-holder never happened.")
     finally:
         srv_a.should_exit = True
         srv_b.should_exit = True

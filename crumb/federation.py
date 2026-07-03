@@ -57,6 +57,12 @@ token header's `kid`. Two properties are load-bearing and worth stating plainly:
     arrives signed by a `kid` we haven't seen, the source refetches once before
     giving up. A rotated issuer keeps verifying with no redeploy; a genuinely
     unknown key is refused (`UnknownSigningKey`), not guessed at.
+  - It follows revocation. A cached key is trusted for a bounded `ttl`; past that
+    the cache is reconfirmed against the live JWKS before it is served again. When
+    an issuer drops a compromised key, tokens signed by it stop verifying within
+    one TTL window. The reconfirm fails closed — if the issuer is unreachable we
+    refuse rather than serve a key past its confirmed lifetime, so an attacker who
+    can stall the fetch cannot extend a revoked key.
 
 A pinned PEM and a JWKS URL are two sources of the SAME trust set — mix them per
 issuer. Pin the key you already hold out of band; fetch the ones that rotate.
@@ -104,6 +110,14 @@ class UnknownSigningKey(CrossIssuerError):
     `UntrustedIssuer`: we federate with the issuer, we just can't find the key it
     claims to have signed with. Refused, never guessed (a token whose `kid` we
     can't resolve is unverifiable, not merely inconvenient)."""
+
+
+class IssuerUnreachable(CrossIssuerError):
+    """A trusted issuer's JWKS endpoint could not be reached to (re)confirm its
+    keys. The cache is stale or empty, so we refuse rather than serve keys we can't
+    currently substantiate — fail-closed. This is deliberate: serving a stale cache
+    when the fetch fails would let an attacker who can stall the endpoint keep a
+    revoked key alive past its TTL."""
 
 
 class StapleMismatch(CrossIssuerError):
@@ -259,40 +273,71 @@ class _PinnedKeys:
 class _JWKSKeys:
     """A trust source that fetches an issuer's CURRENT keys from its JWKS endpoint
     and caches them by `kid`. The verifier commits to the issuer's URL, not to one
-    frozen key, so rotation is handled: an unseen `kid` triggers exactly one
-    refetch before we give up, which is the whole point of not pinning.
+    frozen key, so two moving-target problems are handled:
+
+      - ROTATION (a key APPEARS): an unseen `kid` triggers exactly one refetch
+        before we give up, so a freshly-rotated key is picked up immediately.
+      - REVOCATION (a key DISAPPEARS): a cached key is only trusted for `ttl`
+        seconds. Past that, the cache is stale and must be reconfirmed against the
+        live JWKS before we keep vouching for it. When the issuer has dropped a
+        compromised key, the reconfirm removes it from cache, and tokens signed by
+        it stop verifying — within one TTL window, not forever.
+
+    The refetch fails CLOSED: if the reconfirm can't reach the issuer we raise
+    rather than serve the stale cache. Serving stale would hand an attacker who can
+    stall the JWKS endpoint an indefinite extension on a revoked key — exactly the
+    revocation the TTL exists to enforce. Availability of the issuer's JWKS is the
+    cost; it is the honest cost of verifying against the live issuer.
 
     `fetch` is injectable so tests and in-process demos can serve a JWKS without a
-    socket; in production it is an HTTPS GET (TLS authenticates the issuer). The
+    socket; `clock` likewise so TTL behaviour is testable without real time. In
+    production `fetch` is an HTTPS GET (TLS authenticates the issuer). The
     stdlib-equivalent is `jwt.PyJWKClient`; we keep an explicit cache here so the
     trust boundary — issuer URL in, key out — stays legible in one place."""
 
-    def __init__(self, jwks_uri: str, fetch=None):
+    def __init__(self, jwks_uri: str, fetch=None, ttl: float = 300, clock=None):
         self.jwks_uri = jwks_uri
         self._fetch = fetch or _http_get_json
+        self._ttl = ttl
+        self._clock = clock or time.monotonic
         self._by_kid: dict = {}
-        self._loaded = False
+        self._fetched_at: float | None = None
 
     def _load(self) -> None:
-        doc = self._fetch(self.jwks_uri)
+        try:
+            doc = self._fetch(self.jwks_uri)
+        except CrossIssuerError:
+            raise
+        except Exception as e:                  # network/transport failure
+            raise IssuerUnreachable(
+                f"could not fetch JWKS at {self.jwks_uri}: {e!r}") from e
         by_kid = {}
         for jwk in doc.get("keys", []):
             kid = jwk.get("kid")
             if kid is not None:
                 by_kid[kid] = _jwk_to_key(jwk)
         self._by_kid = by_kid
-        self._loaded = True
+        self._fetched_at = self._clock()
+
+    def _is_stale(self) -> bool:
+        return (self._fetched_at is None
+                or (self._clock() - self._fetched_at) >= self._ttl)
 
     def get(self, kid: str | None):
-        if not self._loaded:
+        # A cache older than ttl can no longer be trusted to reflect revocations,
+        # so reconfirm before serving. This raises (fail-closed) if the issuer is
+        # unreachable — never serve a key past its confirmed lifetime.
+        reloaded = False
+        if self._is_stale():
             self._load()
+            reloaded = True
         if kid is None:
             # No kid to match: only unambiguous if the issuer publishes exactly one.
             if len(self._by_kid) == 1:
                 return next(iter(self._by_kid.values()))
             return None
-        if kid not in self._by_kid:
-            self._load()                    # rotation: refetch once, then decide
+        if kid not in self._by_kid and not reloaded:
+            self._load()                    # rotation: a new kid mid-ttl, refetch once
         return self._by_kid.get(kid)
 
 
@@ -341,21 +386,27 @@ class Federation:
         self._pinned(iss).add(public_key, kid)
         return self
 
-    def trust_jwks_uri(self, iss: str, jwks_uri: str, fetch=None) -> "Federation":
+    def trust_jwks_uri(self, iss: str, jwks_uri: str, fetch=None,
+                       ttl: float = 300, clock=None) -> "Federation":
         """Trust an issuer by its JWKS endpoint: fetch its current keys on demand
         instead of pinning one. This is the trustless steady state — the verifier
-        commits to the issuer's URL, and rotation is handled downstream. `fetch`
-        overrides the default HTTPS GET (tests/in-process demos)."""
-        self._sources[iss] = _JWKSKeys(jwks_uri, fetch=fetch)
+        commits to the issuer's URL, and rotation is handled downstream. `ttl`
+        bounds how long a cached key is trusted before it must be reconfirmed
+        against the live JWKS (this is what lets a revoked key drop out); tighten it
+        to propagate revocations faster, at the cost of more fetches. `fetch`/`clock`
+        override the default HTTPS GET / monotonic clock (tests/in-process demos)."""
+        self._sources[iss] = _JWKSKeys(jwks_uri, fetch=fetch, ttl=ttl, clock=clock)
         return self
 
     def trust_discovery(self, iss: str, fetch=None,
-                        discovery_url: str | None = None) -> "Federation":
+                        discovery_url: str | None = None,
+                        ttl: float = 300, clock=None) -> "Federation":
         """Trust an issuer the way OIDC intends: read its
         `/.well-known/openid-configuration`, take the advertised `jwks_uri`, and
         fetch keys from there. The verifier names only the issuer; the issuer's own
         metadata says where its keys live. `discovery_url` overrides the derived
-        well-known path for issuers that host metadata off-origin."""
+        well-known path for issuers that host metadata off-origin; `ttl`/`clock`
+        flow through to the JWKS cache (see `trust_jwks_uri`)."""
         get = fetch or _http_get_json
         url = discovery_url or f"{iss.rstrip('/')}/.well-known/openid-configuration"
         meta = get(url)
@@ -363,7 +414,7 @@ class Federation:
         if not jwks_uri:
             raise UntrustedIssuer(
                 f"issuer {iss!r} discovery document has no jwks_uri")
-        return self.trust_jwks_uri(iss, jwks_uri, fetch=fetch)
+        return self.trust_jwks_uri(iss, jwks_uri, fetch=fetch, ttl=ttl, clock=clock)
 
     def key_for(self, iss: str | None, kid: str | None = None):
         """Resolve the verifying key for a token, by issuer and (when present) key
