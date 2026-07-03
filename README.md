@@ -60,6 +60,8 @@ python -m crumb.cross_vendor_demo  # same action over OpenAI + a REAL MCP HTTP h
 python -m crumb.tamper_demo        # write crumbs, verify, edit one, watch it break
 python -m crumb.anchor_demo        # the operator rollback the anchor catches
 python -m crumb.actor_binding_demo # operator forges the HUMAN, the token proves the truth
+python -m crumb.cross_issuer_demo  # a delegation chain across TWO issuers, provenance stapled
+python -m crumb.jwks_federation_demo # verifier fetches issuer keys live over HTTP, follows rotation
 python -m crumb.idp_demo           # a REAL RFC 8693 token exchange + JWKS verify
 python -m crumb.verify             # re-verify the ledger on its own
 
@@ -84,6 +86,8 @@ What each one shows:
 - **tamper_demo**: a careless edit. Verification catches it at the exact row.
 - **anchor_demo**: the one to watch. A key-holding operator rewrites a crumb *and re-signs the entire chain*, so per-entry `verify` passes the forgery. The Rekor anchor catches it, because the rewritten root is not the one already public.
 - **actor_binding_demo**: anchor_demo catches a rewritten *record*; this catches a rewritten *human*. The operator edits `actor_identity` and re-signs, so integrity passes over their own log. But the crumb carries the delegation token, and `crumb verify --federation` re-walks it to the root issuer: the token still proves `alice`, the record claims `mallory`, and the human the operator can't re-sign is the one that wins. The recorded human stops being their word.
+- **cross_issuer_demo**: the human logs in at one IdP (A) and the tool is governed by another (B). Vanilla token exchange would have B mint a fresh token and drop A's signature, leaving only B's word for who the human was. Crumb staples instead: B's token carries A's exact token and its hash, so a verifier re-checks A's segment against A's key and never takes B's word for the upstream. Same human, provable across the boundary.
+- **jwks_federation_demo**: the trust set made trustless. Two IdPs come up on real ports serving `/.well-known/openid-configuration` + `/jwks`, and the verifier pins *nothing* — it names the issuers, discovers their JWKS, and fetches their keys live. Then A rotates its signing key: a verifier that had pinned A's PEM would break, but this one sees an unknown `kid`, refetches A's JWKS once, and keeps verifying. Keys always come from the issuer's own endpoint, never the log-holder.
 - **idp_demo**: the bind made real. The gateway no longer signs its own authority — it runs a genuine RFC 8693 token exchange against an identity provider (`crumb/idp.py`), which returns an RS256 token, and the resource verifies it against the provider's published JWKS. No shared secret. Set `CRUMB_IDP_URL` and the same path points at Okta/Keycloak/Zitadel; leave it unset and the gateway falls back to a local dev mint, so every other demo runs with zero infra.
 
 ## Honest scope

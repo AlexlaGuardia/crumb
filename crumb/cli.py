@@ -27,9 +27,15 @@ Layers checked:
                                  --federation this layer is a VISIBLE skip, never
                                  a silent pass.
 
---federation <manifest> is a JSON file mapping issuer -> PEM public key: the
-verifier's own pinned trust set, supplied out-of-band, never fetched from the
-server under test. That is what keeps the human check operator-independent.
+--federation <manifest> is a JSON file naming the issuers the verifier accepts —
+its own trust set, supplied out-of-band, never taken from the server under test.
+Each issuer's key comes from one of two sources, mixable per issuer:
+    "iss": "-----BEGIN PUBLIC KEY-----\\n..."   pinned PEM (static)
+    "iss": "https://idp/jwks"                    fetch keys from that JWKS URL
+    "iss": {"jwks_uri": "https://idp/jwks"}      same, explicit
+    "iss": {"discovery": "https://idp"}          read /.well-known, then fetch
+Fetched keys follow issuer rotation and are pulled from the ISSUER's own endpoint
+(TLS-authenticated), so the human check stays operator-independent either way.
 
 Exit 0 only when all layers pass.  Nonzero on any failure; prints the layer
 name and the offending entry or mismatch.
@@ -68,17 +74,43 @@ def _fetch(url: str) -> bytes:
 
 
 def _load_federation(path: str) -> Federation:
-    """Build a Federation from a local trust manifest: JSON mapping issuer ->
-    PEM public key, e.g. {"https://idp-a.local": "-----BEGIN PUBLIC KEY-----\\n..."}.
+    """Build a Federation from a local trust manifest: JSON naming each issuer the
+    verifier accepts and where its key comes from. A value may be:
 
-    This is the verifier's OWN pinned trust set, supplied out-of-band — never
-    fetched from the server under test. That's what keeps the human check
-    trustless: the issuer keys come from you, not from whoever holds the log."""
+      - a PEM string  ("-----BEGIN PUBLIC KEY-----...")  -> pinned, static.
+      - a URL string  ("https://idp/jwks")               -> fetched from that JWKS.
+      - {"jwks_uri": "..."}                              -> fetched, explicit.
+      - {"discovery": "https://idp"}                     -> discover then fetch.
+
+    Either way the manifest is the verifier's OWN out-of-band trust set — the
+    issuers, and the endpoints their keys come from, are named by you, never taken
+    from the server under test. Pinned keys are frozen; fetched keys follow the
+    issuer's rotation and are pulled from the issuer's own (TLS) endpoint."""
     manifest = json.loads(Path(path).read_text())
     fed = Federation()
-    for iss, pem in manifest.items():
-        fed.trust_key(iss, serialization.load_pem_public_key(pem.encode()))
+    for iss, source in manifest.items():
+        if isinstance(source, dict):
+            if source.get("discovery"):
+                fed.trust_discovery(iss, discovery_url=_discovery_url(source["discovery"]))
+            elif source.get("jwks_uri"):
+                fed.trust_jwks_uri(iss, source["jwks_uri"])
+            else:
+                raise ValueError(f"issuer {iss!r}: object needs 'jwks_uri' or 'discovery'")
+        elif source.lstrip().startswith("-----BEGIN"):
+            fed.trust_key(iss, serialization.load_pem_public_key(source.encode()))
+        elif source.startswith("http"):
+            fed.trust_jwks_uri(iss, source)
+        else:
+            raise ValueError(f"issuer {iss!r}: value must be a PEM, a URL, or an object")
     return fed
+
+
+def _discovery_url(base: str) -> str:
+    """Accept either an issuer base (append the well-known path) or a full
+    discovery URL (use as-is), so a manifest can give whichever it has."""
+    if base.endswith("/.well-known/openid-configuration"):
+        return base
+    return f"{base.rstrip('/')}/.well-known/openid-configuration"
 
 
 # ── core verification logic (shared by remote + local paths) ─────────────────
