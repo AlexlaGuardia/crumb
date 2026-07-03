@@ -204,6 +204,14 @@ class Federation:
         self._keys[issuer.iss] = issuer.public_key()
         return self
 
+    def trust_key(self, iss: str, public_key) -> "Federation":
+        """Trust an issuer by its raw public key, not a live `Issuer` object.
+        This is how a verifier pins the keys it accepts out-of-band (e.g. a
+        `crumb verify --federation` manifest) — the same explicit trust set,
+        sourced from disk instead of an in-process issuer."""
+        self._keys[iss] = public_key
+        return self
+
     def key_for(self, iss: str | None):
         key = self._keys.get(iss)
         if key is None:

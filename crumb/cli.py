@@ -7,7 +7,7 @@ network call beyond pulling the raw data is a direct query to Sigstore's public
 Rekor log — a transparency log the operator doesn't control.
 
 Usage:
-    crumb verify <target> [--json]
+    crumb verify <target> [--federation <manifest>] [--json]
 
 target may be:
     - A URL  (http[s]://...)  — fetches ledger, pubkey, and anchors from the
@@ -21,6 +21,15 @@ Layers checked:
                                  to the latest anchor's published root
     3. public anchor           — direct GET to rekor.sigstore.dev, confirm the
                                  anchored digest matches our recomputed checkpoint
+    4. actor binding           — for crumbs carrying a delegation token, re-walk
+                                 it against --federation and confirm the recorded
+                                 human is the one the token proves. Without
+                                 --federation this layer is a VISIBLE skip, never
+                                 a silent pass.
+
+--federation <manifest> is a JSON file mapping issuer -> PEM public key: the
+verifier's own pinned trust set, supplied out-of-band, never fetched from the
+server under test. That is what keeps the human check operator-independent.
 
 Exit 0 only when all layers pass.  Nonzero on any failure; prints the layer
 name and the offending entry or mismatch.
@@ -34,9 +43,12 @@ from pathlib import Path
 
 import httpx
 
+from cryptography.hazmat.primitives import serialization
+
 from . import merkle
 from .anchor import verify_checkpoint_in_rekor
-from .verify import verify_entries
+from .federation import Federation
+from .verify import verify_actor_binding, verify_entries
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -55,28 +67,69 @@ def _fetch(url: str) -> bytes:
     return resp.content
 
 
+def _load_federation(path: str) -> Federation:
+    """Build a Federation from a local trust manifest: JSON mapping issuer ->
+    PEM public key, e.g. {"https://idp-a.local": "-----BEGIN PUBLIC KEY-----\\n..."}.
+
+    This is the verifier's OWN pinned trust set, supplied out-of-band — never
+    fetched from the server under test. That's what keeps the human check
+    trustless: the issuer keys come from you, not from whoever holds the log."""
+    manifest = json.loads(Path(path).read_text())
+    fed = Federation()
+    for iss, pem in manifest.items():
+        fed.trust_key(iss, serialization.load_pem_public_key(pem.encode()))
+    return fed
+
+
 # ── core verification logic (shared by remote + local paths) ─────────────────
+
+
+def _binding_layer(entries: list[dict], federation: "Federation | None") -> dict:
+    """Layer 4 (conditional): cryptographically confirm the recorded human by
+    re-walking each crumb's actor_token against a pinned federation trust set.
+
+    Only meaningful for token-bearing ledgers. Three states:
+      - no bound crumbs           -> {"ok": None, "note": "no bound crumbs"}
+      - bound crumbs, no --federation -> {"ok": None, "note": ...}  (visible skip,
+        never a silent pass: the human went unchecked and the report says so)
+      - federation supplied       -> pass/fail from verify_actor_binding
+    """
+    has_tokens = any(e.get("actor_token") for e in entries)
+    if not has_tokens:
+        return {"ok": None, "note": "no bound crumbs"}
+    if federation is None:
+        return {"ok": None,
+                "note": "bound crumbs present but no --federation set; "
+                        "human NOT cryptographically checked"}
+    report = verify_actor_binding(entries, federation)
+    return {
+        "ok": report.ok,
+        "checked": report.checked,
+        "issues": [(seq, reason) for seq, reason in report.issues],
+    }
 
 
 def _run_verification(
     entries: list[dict],
     pub_pem: bytes,
     anchors: list[dict],
+    federation: "Federation | None" = None,
 ) -> dict:
-    """Run all three verification layers and return a structured result dict.
+    """Run every verification layer and return a structured result dict.
 
     Args:
-        entries:  parsed ledger entries
-        pub_pem:  Ed25519 public key bytes (PEM)
-        anchors:  list of anchor records (may be empty)
+        entries:     parsed ledger entries
+        pub_pem:     Ed25519 public key bytes (PEM)
+        anchors:     list of anchor records (may be empty)
+        federation:  the verifier's pinned issuer trust set for the actor-binding
+                     layer, or None to skip it (see _binding_layer)
 
     Returns:
         {
             "chain":   {"ok": bool, "checked": int, "issues": [...] or []},
-            "merkle":  {"ok": bool, "anchored_root": str, "recomputed_root": str}
-                       | {"ok": None, "note": "no anchors"},
-            "rekor":   {...}  | {"ok": None, "note": "no anchors"}
-                              | {"ok": None, "note": "anchor not submitted to Rekor"},
+            "merkle":  {"ok": bool, ...} | {"ok": None, "note": "no anchors"},
+            "rekor":   {...}            | {"ok": None, "note": ...},
+            "binding": {"ok": bool, ...} | {"ok": None, "note": ...},
         }
     """
     # Layer 1: chain + signatures
@@ -86,12 +139,14 @@ def _run_verification(
         "checked": report.checked,
         "issues": [(seq, reason) for seq, reason in report.issues],
     }
+    binding_result = _binding_layer(entries, federation)
 
     if not anchors:
         return {
             "chain": chain_result,
             "merkle": {"ok": None, "note": "no anchors"},
             "rekor": {"ok": None, "note": "no anchors"},
+            "binding": binding_result,
         }
 
     latest = anchors[-1]
@@ -125,13 +180,14 @@ def _run_verification(
         "chain": chain_result,
         "merkle": merkle_result,
         "rekor": rekor_result,
+        "binding": binding_result,
     }
 
 
 # ── remote path ──────────────────────────────────────────────────────────────
 
 
-def _verify_remote(base_url: str) -> dict:
+def _verify_remote(base_url: str, federation: "Federation | None" = None) -> dict:
     base = base_url.rstrip("/")
     try:
         entries = json.loads(_fetch(f"{base}/api/ledger"))["entries"]
@@ -146,7 +202,7 @@ def _verify_remote(base_url: str) -> dict:
     except Exception as exc:
         return {"error": f"could not fetch anchors from {base}: {exc}"}
 
-    result = _run_verification(entries, pub_pem, anchors)
+    result = _run_verification(entries, pub_pem, anchors, federation)
     result["source"] = base
     return result
 
@@ -154,7 +210,7 @@ def _verify_remote(base_url: str) -> dict:
 # ── local path ───────────────────────────────────────────────────────────────
 
 
-def _verify_local(ledger_path: str) -> dict:
+def _verify_local(ledger_path: str, federation: "Federation | None" = None) -> dict:
     p = Path(ledger_path)
     if not p.exists():
         return {"error": f"ledger not found: {ledger_path}"}
@@ -176,7 +232,7 @@ def _verify_local(ledger_path: str) -> dict:
             if ln.strip()
         ]
 
-    result = _run_verification(entries, pub_pem, anchors)
+    result = _run_verification(entries, pub_pem, anchors, federation)
     result["source"] = str(p)
     return result
 
@@ -239,6 +295,19 @@ def _print_report(result: dict) -> int:
             reason = r.get("reason", "digest mismatch")
             print(f"       {reason}")
 
+    # Layer 4: actor binding (the recorded human, re-derived from the token)
+    b = result.get("binding", {"ok": None, "note": "no bound crumbs"})
+    if b.get("ok") is None:
+        print(f"  - actor binding        ({b.get('note', 'skipped')})")
+    else:
+        ok4 = bool(b.get("ok"))
+        print(f"  {_tick(ok4)} actor binding      "
+              f"({b.get('checked', 0)} human(s) proven from token)")
+        if not ok4:
+            all_ok = False
+            for seq, reason in b.get("issues", []):
+                print(f"       entry {seq}: {reason}")
+
     verdict = "VERIFIED" if all_ok else "MISMATCH"
     print(f"\n  {verdict}\n")
 
@@ -261,16 +330,18 @@ def _print_report(result: dict) -> int:
 
 def _print_json(result: dict) -> int:
     # Make issues JSON-serialisable (they're tuples from verify_entries)
-    if "chain" in result and "issues" in result["chain"]:
-        result["chain"]["issues"] = [
-            {"seq": seq, "reason": reason}
-            for seq, reason in result["chain"]["issues"]
-        ]
+    for layer in ("chain", "binding"):
+        if layer in result and "issues" in result[layer]:
+            result[layer]["issues"] = [
+                {"seq": seq, "reason": reason}
+                for seq, reason in result[layer]["issues"]
+            ]
     all_ok = (
         "error" not in result
         and bool(result.get("chain", {}).get("ok"))
         and result.get("merkle", {}).get("ok") is not False
         and result.get("rekor", {}).get("ok") is not False
+        and result.get("binding", {}).get("ok") is not False
     )
     result["verified"] = all_ok
     print(json.dumps(result, indent=2))
@@ -293,18 +364,38 @@ def main() -> None:
 
     rest = args[1:]
     use_json = "--json" in rest
+
+    # --federation <path>: the verifier's pinned issuer trust set for actor binding
+    federation = None
+    if "--federation" in rest:
+        fi = rest.index("--federation")
+        try:
+            fed_path = rest[fi + 1]
+        except IndexError:
+            print("--federation needs a path to a JSON issuer->PEM manifest",
+                  file=sys.stderr)
+            sys.exit(1)
+        try:
+            federation = _load_federation(fed_path)
+        except Exception as exc:
+            print(f"could not load federation manifest {fed_path}: {exc}",
+                  file=sys.stderr)
+            sys.exit(1)
+        rest = rest[:fi] + rest[fi + 2:]
+
     targets = [a for a in rest if a != "--json"]
 
     if not targets:
-        print("Usage: crumb verify <url-or-ledger-path> [--json]", file=sys.stderr)
+        print("Usage: crumb verify <url-or-ledger-path> [--federation <manifest>] "
+              "[--json]", file=sys.stderr)
         sys.exit(1)
 
     target = targets[0]
 
     if target.startswith("http://") or target.startswith("https://"):
-        result = _verify_remote(target)
+        result = _verify_remote(target, federation)
     else:
-        result = _verify_local(target)
+        result = _verify_local(target, federation)
 
     if use_json:
         sys.exit(_print_json(result))

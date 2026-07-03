@@ -59,6 +59,7 @@ python -m crumb.demo               # the gap, then the gateway closing it
 python -m crumb.cross_vendor_demo  # same action over OpenAI + a REAL MCP HTTP hop
 python -m crumb.tamper_demo        # write crumbs, verify, edit one, watch it break
 python -m crumb.anchor_demo        # the operator rollback the anchor catches
+python -m crumb.actor_binding_demo # operator forges the HUMAN, the token proves the truth
 python -m crumb.idp_demo           # a REAL RFC 8693 token exchange + JWKS verify
 python -m crumb.verify             # re-verify the ledger on its own
 
@@ -82,6 +83,7 @@ What each one shows:
 - **cross_vendor_demo**: the same read driven once as an OpenAI function-call and once as a real MCP `tools/call` over HTTP to `records-mcp`. Both trace to the same human in one schema. Then, over that same wire, the same call with a service-account token (the human is gone) versus a delegation token (the human survives). That delta is the product.
 - **tamper_demo**: a careless edit. Verification catches it at the exact row.
 - **anchor_demo**: the one to watch. A key-holding operator rewrites a crumb *and re-signs the entire chain*, so per-entry `verify` passes the forgery. The Rekor anchor catches it, because the rewritten root is not the one already public.
+- **actor_binding_demo**: anchor_demo catches a rewritten *record*; this catches a rewritten *human*. The operator edits `actor_identity` and re-signs, so integrity passes over their own log. But the crumb carries the delegation token, and `crumb verify --federation` re-walks it to the root issuer: the token still proves `alice`, the record claims `mallory`, and the human the operator can't re-sign is the one that wins. The recorded human stops being their word.
 - **idp_demo**: the bind made real. The gateway no longer signs its own authority — it runs a genuine RFC 8693 token exchange against an identity provider (`crumb/idp.py`), which returns an RS256 token, and the resource verifies it against the provider's published JWKS. No shared secret. Set `CRUMB_IDP_URL` and the same path points at Okta/Keycloak/Zitadel; leave it unset and the gateway falls back to a local dev mint, so every other demo runs with zero infra.
 
 ## Honest scope
