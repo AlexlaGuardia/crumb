@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680">
+  <rect width="1200" height="680" fill="#0b0e14"/>
+  <rect x="1" y="1" width="1198" height="678" fill="none" stroke="#1e2533" stroke-width="2"/>
+
+  <text x="600" y="58" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="30" font-weight="bold" fill="#e6edf3">the IdP rotates its signing key</text>
+  <text x="600" y="92" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="21" fill="#8b96a8">same event, two verifiers</text>
+
+  <!-- divider -->
+  <line x1="600" y1="130" x2="600" y2="640" stroke="#1e2533" stroke-width="2" stroke-dasharray="4 8"/>
+
+  <!-- LEFT: pinned PEM -->
+  <text x="60" y="168" font-family="DejaVu Sans Mono, monospace" font-size="24" font-weight="bold" fill="#f85149">PINNED PEM</text>
+  <text x="60" y="196" font-family="DejaVu Sans Mono, monospace" font-size="18" fill="#8b96a8">verifier holds a static key</text>
+
+  <rect x="60" y="222" width="480" height="86" rx="12" fill="#0e1320" stroke="#2c3a4f" stroke-width="2"/>
+  <text x="84" y="256" font-family="DejaVu Sans Mono, monospace" font-size="19" fill="#9aa6bd">verifier  pins <tspan fill="#e6edf3">key K1</tspan>  (out of band)</text>
+  <text x="84" y="286" font-family="DejaVu Sans Mono, monospace" font-size="17" fill="#566075">frozen the day you copied it</text>
+
+  <text x="300" y="346" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="17" fill="#566075">IdP rotates  K1 &#8594; K2</text>
+  <line x1="300" y1="312" x2="300" y2="360" stroke="#566075" stroke-width="2"/>
+  <polygon points="300,368 294,356 306,356" fill="#566075"/>
+
+  <rect x="60" y="382" width="480" height="86" rx="12" fill="#1a1012" stroke="#5a2c2c" stroke-width="2"/>
+  <text x="84" y="416" font-family="DejaVu Sans Mono, monospace" font-size="19" fill="#e6edf3">token arrives  signed <tspan fill="#f85149">K2</tspan></text>
+  <text x="84" y="446" font-family="DejaVu Sans Mono, monospace" font-size="17" fill="#8b96a8">verifier still checks against K1</text>
+
+  <rect x="60" y="500" width="480" height="94" rx="12" fill="#1a1012" stroke="#5a2c2c" stroke-width="2.5"/>
+  <text x="84" y="540" font-family="DejaVu Sans Mono, monospace" font-size="22" font-weight="bold" fill="#f85149">&#10007;  verify fails</text>
+  <text x="84" y="572" font-family="DejaVu Sans Mono, monospace" font-size="17" fill="#8b96a8">breaks quiet. a redeploy to fix.</text>
+
+  <!-- RIGHT: JWKS fetch -->
+  <text x="640" y="168" font-family="DejaVu Sans Mono, monospace" font-size="24" font-weight="bold" fill="#7ee787">JWKS FETCH</text>
+  <text x="640" y="196" font-family="DejaVu Sans Mono, monospace" font-size="18" fill="#8b96a8">verifier holds the issuer's URL</text>
+
+  <rect x="640" y="222" width="500" height="86" rx="12" fill="#0e1320" stroke="#2c3a4f" stroke-width="2"/>
+  <text x="664" y="256" font-family="DejaVu Sans Mono, monospace" font-size="19" fill="#9aa6bd">verifier  names <tspan fill="#e6edf3">issuer + jwks_uri</tspan></text>
+  <text x="664" y="286" font-family="DejaVu Sans Mono, monospace" font-size="17" fill="#566075">selects the key by the token's kid</text>
+
+  <text x="890" y="346" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="17" fill="#566075">IdP rotates  K1 &#8594; K2  (new kid)</text>
+  <line x1="890" y1="312" x2="890" y2="360" stroke="#566075" stroke-width="2"/>
+  <polygon points="890,368 884,356 896,356" fill="#566075"/>
+
+  <rect x="640" y="382" width="500" height="86" rx="12" fill="#0e1a12" stroke="#2c5a37" stroke-width="2"/>
+  <text x="664" y="416" font-family="DejaVu Sans Mono, monospace" font-size="19" fill="#e6edf3">unseen kid  &#8594;  refetch /jwks <tspan fill="#7ee787">once</tspan></text>
+  <text x="664" y="446" font-family="DejaVu Sans Mono, monospace" font-size="17" fill="#8b96a8">pulls K2 from the issuer itself</text>
+
+  <rect x="640" y="500" width="500" height="94" rx="12" fill="#0e1a12" stroke="#2c5a37" stroke-width="2.5"/>
+  <text x="664" y="540" font-family="DejaVu Sans Mono, monospace" font-size="22" font-weight="bold" fill="#7ee787">&#10003;  still verifies</text>
+  <text x="664" y="572" font-family="DejaVu Sans Mono, monospace" font-size="17" fill="#8b96a8">no redeploy. rotation followed.</text>
+
+  <text x="600" y="632" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="18" fill="#56d4c4">crumb.alexlaguardia.dev</text>
+</svg>

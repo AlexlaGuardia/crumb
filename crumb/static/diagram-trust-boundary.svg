@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620">
+  <rect width="1200" height="620" fill="#0b0e14"/>
+  <rect x="1" y="1" width="1198" height="618" fill="none" stroke="#1e2533" stroke-width="2"/>
+
+  <text x="600" y="58" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="30" font-weight="bold" fill="#e6edf3">where the keys come from</text>
+  <text x="600" y="92" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="21" fill="#8b96a8">fetching is not the same as trusting</text>
+
+  <!-- Issuer (trusted source) -->
+  <rect x="70" y="150" width="360" height="150" rx="14" fill="#0e1a12" stroke="#2c5a37" stroke-width="2"/>
+  <text x="94" y="192" font-family="DejaVu Sans Mono, monospace" font-size="22" font-weight="bold" fill="#7ee787">the issuer (IdP)</text>
+  <text x="94" y="228" font-family="DejaVu Sans Mono, monospace" font-size="18" fill="#9aa6bd">GET /.well-known  &#8594;  /jwks</text>
+  <text x="94" y="258" font-family="DejaVu Sans Mono, monospace" font-size="18" fill="#8b96a8">served over TLS</text>
+  <text x="94" y="286" font-family="DejaVu Sans Mono, monospace" font-size="17" fill="#566075">TLS authenticates the endpoint</text>
+
+  <!-- Log-holder (NOT the source) -->
+  <rect x="70" y="360" width="360" height="150" rx="14" fill="#1a1012" stroke="#5a2c2c" stroke-width="2"/>
+  <text x="94" y="402" font-family="DejaVu Sans Mono, monospace" font-size="22" font-weight="bold" fill="#f85149">the log-holder</text>
+  <text x="94" y="438" font-family="DejaVu Sans Mono, monospace" font-size="18" fill="#9aa6bd">the server under audit</text>
+  <text x="94" y="468" font-family="DejaVu Sans Mono, monospace" font-size="18" fill="#8b96a8">holds the ledger it wants believed</text>
+  <text x="94" y="496" font-family="DejaVu Sans Mono, monospace" font-size="17" fill="#566075">may be lying. that's the point.</text>
+
+  <!-- Verifier -->
+  <rect x="800" y="250" width="330" height="160" rx="14" fill="#0e1320" stroke="#2c3a4f" stroke-width="2.5"/>
+  <text x="824" y="296" font-family="DejaVu Sans Mono, monospace" font-size="23" font-weight="bold" fill="#e6edf3">the verifier</text>
+  <text x="824" y="332" font-family="DejaVu Sans Mono, monospace" font-size="18" fill="#9aa6bd">names the issuers it</text>
+  <text x="824" y="356" font-family="DejaVu Sans Mono, monospace" font-size="18" fill="#9aa6bd">accepts, out of band</text>
+  <text x="824" y="392" font-family="DejaVu Sans Mono, monospace" font-size="17" fill="#56d4c4">its own trust set, readable</text>
+
+  <!-- trusted path: issuer -> verifier (green) -->
+  <path d="M 430 220 C 620 220, 640 300, 795 310" fill="none" stroke="#7ee787" stroke-width="3"/>
+  <polygon points="795,310 781,304 783,317" fill="#7ee787"/>
+  <text x="590" y="240" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="17" fill="#7ee787">keys fetched here  &#10003;</text>
+
+  <!-- blocked path: log-holder -> verifier (red, crossed) -->
+  <path d="M 430 430 C 620 430, 640 370, 795 360" fill="none" stroke="#5a2c2c" stroke-width="3" stroke-dasharray="7 7"/>
+  <text x="600" y="452" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="17" fill="#f85149">never from here  &#10007;</text>
+  <g stroke="#f85149" stroke-width="4">
+    <line x1="600" y1="392" x2="624" y2="416"/>
+    <line x1="624" y1="392" x2="600" y2="416"/>
+  </g>
+
+  <text x="600" y="576" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="18" fill="#56d4c4">crumb.alexlaguardia.dev</text>
+</svg>
