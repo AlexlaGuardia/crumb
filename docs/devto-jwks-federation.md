@@ -25,7 +25,7 @@ Here is what the trust set looked like. A little JSON manifest, issuer to public
 
 The verifier reads that, and now it can check any token either issuer signed. Clean. Operator-independent, too, which is the whole point of Crumb: those keys came from *you*, out of band, not from whoever is holding the log you're auditing. Nobody in the middle gets to assert their own trustworthiness.
 
-The problem is the word "static." A signing key is not a fact about an issuer. It's a thing an issuer rotates, on a schedule, as basic hygiene, the same way you rotate any other secret. Okta rotates. Keycloak rotates. Auth0 rotates. When they do, the PEM you pinned three weeks ago is now a key nobody signs with anymore.
+The problem is the word "static." A signing key is not a fact about an issuer. It's a thing an issuer rotates, on a schedule, as basic hygiene, the same way you rotate any other secret. Okta rotates. Keycloak and Auth0 do too, on their own schedules. When they do, the PEM you pinned three weeks ago is now a key nobody signs with anymore.
 
 ![Left, a verifier pinning a static PEM: the IdP rotates its key, a token signed with the new key arrives, verification fails silently and needs a redeploy. Right, a verifier that fetches JWKS by kid: the same rotation triggers one refetch and verification still passes.](https://raw.githubusercontent.com/AlexlaGuardia/crumb/master/crumb/static/diagram-pin-vs-fetch.png)
 
@@ -62,8 +62,8 @@ And the verifier still decides which issuers count. Fetching a key from an endpo
 
 So the two ways it can refuse stay distinct, and I kept them named:
 
-- **`UntrustedIssuer`** — the token's issuer is not in the trust set at all. There is no endpoint to even ask. Refused outright.
-- **`UnknownSigningKey`** — the issuer *is* trusted, but none of its published keys match the token's `kid`, even after a fresh fetch. The issuer is real; the key it claims to have signed with does not exist. Refused, not guessed.
+- **`UntrustedIssuer`**. The token's issuer is not in the trust set at all. There is no endpoint to even ask. Refused outright.
+- **`UnknownSigningKey`**. The issuer *is* trusted, but none of its published keys match the token's `kid`, even after a fresh fetch. The issuer is real; the key it claims to have signed with does not exist. Refused, not guessed.
 
 The first is a stranger. The second is a trusted party holding up a key that isn't theirs. Collapsing those two into one "nope" would throw away the only information a debugger actually wants.
 
@@ -71,7 +71,7 @@ The first is a stranger. The second is a trusted party holding up a key that isn
 
 TLS is doing real load-bearing work now, and I should say that out loud instead of letting it hide. "The keys come from the issuer's own endpoint" is only as true as your certificate validation. Point this at an issuer over plain HTTP, or disable cert checks because a test was annoying, and the trust boundary I just drew has a hole straight through it. In the demo below the issuers run on localhost over plain HTTP, which is fine for showing the mechanism and would be a real hole in production. The honest claim is "keys fetched from the issuer over an authenticated channel," and the authenticated part is a requirement, not a decoration.
 
-There's more I haven't built. This follows rotation but does nothing clever about *revocation* — an issuer pulling a key it wants dead faster than a cache expires. And a verifier that fetches is a verifier that can be made to wait; anything reaching across the network wants timeouts and a failure mode that fails closed. Those are real, and they are not done.
+There's more I haven't built. This follows rotation but does nothing clever about *revocation*: an issuer pulling a key it wants dead faster than a cache expires. And a verifier that fetches is a verifier that can be made to wait; anything reaching across the network wants timeouts and a failure mode that fails closed. Those are real, and they are not done.
 
 What is done is the thing that was actually broken: the trust set no longer freezes a key it has no business freezing. You name the issuers. Their keys stay theirs, fetched live, followed through rotation, and never once sourced from the party you're auditing.
 
