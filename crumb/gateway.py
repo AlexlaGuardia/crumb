@@ -33,9 +33,16 @@ class Dispatch:
 
 
 class Gateway:
-    def __init__(self, ledger: Ledger, agent_id: str, mcp_url: str | None = None):
+    def __init__(self, ledger: Ledger, agent_id: str, mcp_url: str | None = None,
+                 bind_token: bool = False):
         self.ledger = ledger
         self.agent_id = agent_id
+        # When True, the delegation token minted for each call is persisted into
+        # the crumb as `actor_token`, so a verifier can later re-walk it and
+        # cryptographically confirm the recorded human (see verify_actor_binding).
+        # Default False keeps every existing crumb byte-identical — the
+        # deterministic web seed and its Rekor anchor depend on stable hashes.
+        self.bind_token = bind_token
         # When set, the MCP path is a real HTTP hop to records-mcp (P3). When
         # None, it falls back to an in-process call — used by the deterministic
         # web seed, which reproduces a fixed timeline and can't depend on a live
@@ -117,6 +124,11 @@ class Gateway:
         # and the deterministic web seed + Rekor anchor stay byte-for-byte stable.
         if chain is not None:
             fields["actor_chain"] = chain
+        # Opt-in: bind the token to the crumb so the human is later provable from
+        # the ledger alone, not just asserted. Gated so untokened crumbs stay
+        # hash-stable for the anchored seed.
+        if self.bind_token:
+            fields["actor_token"] = token
         record = self.ledger.append(fields)
         return Dispatch(result=result, record=record, token=token)
 

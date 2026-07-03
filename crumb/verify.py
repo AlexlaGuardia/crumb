@@ -20,9 +20,11 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import jwt
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 
+from .federation import CrossIssuerError, verify_chain
 from .ledger import GENESIS, canonical
 
 ENVELOPE = ("entry_hash", "signature")  # everything else is signed-over core
@@ -97,6 +99,67 @@ def find_unauthorized(path: str = "data/ledger.jsonl") -> list[dict]:
         return []
     crumbs = [json.loads(ln) for ln in p.read_text().splitlines() if ln.strip()]
     return [c for c in crumbs if c.get("on_behalf_assertion") == "unauthorized"]
+
+
+def verify_actor_binding(entries: list[dict], federation) -> Report:
+    """Cryptographically confirm the human named in each crumb — without trusting
+    the operator who wrote it.
+
+    verify_entries proves the log wasn't ALTERED. It does not prove the recorded
+    `actor_identity` is real: that string is the operator's assertion. An operator
+    holding the ledger key can rewrite 'alice' to 'mallory' and re-sign, and the
+    tamper-evidence checks still pass over their own consistent log.
+
+    This closes that gap for any crumb carrying `actor_token`. It re-walks the
+    (possibly cross-issuer) delegation token against the federation key set — the
+    same `verify_chain` the demo runs, now applied to the persisted record — and
+    asserts the human the token PROVES equals the human the record CLAIMS. The
+    operator can re-sign their own segments all day; they cannot sign as the root
+    issuer, so a forged human dies here.
+
+    Additive by construction: crumbs without `actor_token` are skipped, so an
+    existing ledger verifies exactly as before. `resource` per entry is the outer
+    token's audience, which is the crumb's `action` (the gateway scopes the token
+    to the tool it calls).
+
+    Args:
+        entries:     ledger records (dicts), as loaded for verify_entries.
+        federation:  a `federation.Federation` carrying the issuer public keys the
+                     verifier chooses to trust. The one explicit assumption; every
+                     segment is checked against it.
+
+    Returns:
+        Report(ok, checked, issues) — `checked` counts only token-bearing crumbs.
+    """
+    issues: list = []
+    checked = 0
+
+    for i, rec in enumerate(entries):
+        token = rec.get("actor_token")
+        if not token:
+            continue  # additive: untokened crumbs are out of scope, not failures
+        checked += 1
+        seq = rec.get("seq", i)
+        claimed = rec.get("actor_identity")
+
+        try:
+            resolved = verify_chain(token, rec.get("action"), federation)
+        except (CrossIssuerError, jwt.PyJWTError) as e:
+            issues.append((seq, f"actor token failed verification ({type(e).__name__})"))
+            continue
+
+        if resolved["human"] != claimed:
+            issues.append((seq,
+                f"actor binding mismatch: record claims {claimed!r} but the token "
+                f"proves {resolved['human']!r}"))
+
+        recorded_chain = rec.get("actor_chain")
+        if recorded_chain is not None and resolved["actor_chain"] != recorded_chain:
+            issues.append((seq,
+                f"actor chain mismatch: record says {recorded_chain} but the token "
+                f"carries {resolved['actor_chain']}"))
+
+    return Report(ok=not issues, checked=checked, issues=issues)
 
 
 def main() -> None:
