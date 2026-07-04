@@ -15,6 +15,10 @@ documents from memory and can rotate its signing key the way a real IdP does.
 
 from __future__ import annotations
 
+import contextlib
+import json
+import threading
+
 import jwt
 import pytest
 
@@ -258,3 +262,66 @@ def test_pinned_and_fetched_sources_mix_in_one_trust_set():
 
     assert resolved["human"] == "alice"
     assert resolved["actor_chain"] == ["researcher", "planner"]
+
+
+@contextlib.contextmanager
+def _served_issuer(kid_gen: int = 1):
+    """Serve one issuer's discovery + JWKS over a REAL loopback socket, with `iss`
+    set to the port it actually listens on so the default discovery path derives
+    cleanly. Every test above injects `fetch`; this one drives the shipped
+    `_http_get_json` (httpx) end to end so the real network round-trip — the one
+    line the injected tests can't reach — is guarded in CI, not just runnable by
+    hand in `jwks_federation_demo`."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    box = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            iss = box["iss"]
+            if self.path == "/.well-known/openid-configuration":
+                body = {"issuer": iss, "jwks_uri": f"{iss}/jwks"}
+            elif self.path == "/jwks":
+                body = box["issuer"].jwks()
+            else:
+                self.send_error(404)
+                return
+            payload = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *_):  # keep the test output quiet
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    iss = f"http://127.0.0.1:{srv.server_address[1]}"
+    box["iss"] = iss
+    box["issuer"] = Issuer(iss, kid=f"{iss}-rs256-{kid_gen}")
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield box["issuer"], iss
+    finally:
+        srv.shutdown()
+        thread.join(timeout=5)
+
+
+def test_real_socket_round_trip_via_default_httpx_fetch():
+    """The one path every other test stubs: keys fetched over an actual TCP socket
+    through the default httpx-backed `_http_get_json`, with nothing injected. Proves
+    the shipped fetch code — discovery read, jwks_uri followed, kid selected —
+    actually works against a live endpoint, backing the public writeups' claim with
+    a network round-trip the CI gate holds."""
+    with _served_issuer() as (issuer, iss):
+        token = issuer.exchange(_human().token, "planner", RESOURCE, Federation())
+
+        # No fetch= override: this exercises _http_get_json / httpx for real.
+        fed = Federation().trust_discovery(iss)
+        resolved = verify_chain(token, RESOURCE, fed)
+
+    assert resolved["human"] == "alice"
+    assert resolved["actor_chain"] == ["planner"]
+    assert resolved["issuer_path"] == [iss]
