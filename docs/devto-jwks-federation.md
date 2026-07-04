@@ -1,6 +1,7 @@
 ---
 title: "I pinned each issuer's public key. Then the IdP rotated it."
-published: false
+published: true
+canonical_url: https://dev.to/alexlaguardia/i-pinned-each-issuers-public-key-then-the-idp-rotated-it-3jon
 description: "Verifying a delegation token across two identity providers works, as long as you have their keys. I had been pinning them as static PEMs. Here's why that breaks the day an issuer rotates, and how Crumb's verifier fetches keys live without handing trust back to the operator."
 tags: ai, security, oauth, mcp
 cover_image: https://raw.githubusercontent.com/AlexlaGuardia/crumb/master/crumb/static/cover-jwks-federation.png
