@@ -202,13 +202,15 @@ def test_stale_cache_fails_closed_when_issuer_unreachable():
         return host.fetch(url)
 
     fed = Federation().trust_jwks_uri(
-        host.iss, host.jwks_url, fetch=flaky_fetch, ttl=10, clock=lambda: now[0])
+        host.iss, host.jwks_url, fetch=flaky_fetch, ttl=10, clock=lambda: now[0],
+        resilience={"sleep": lambda _s: None})  # don't burn real time on retries
 
     token = host.issuer.exchange(_human().token, "planner", RESOURCE, Federation())
     assert verify_chain(token, RESOURCE, fed)["human"] == "alice"
 
     # Issuer goes dark, TTL lapses: the reconfirm can't run, so we refuse to keep
-    # vouching for the cached key rather than serve it unconfirmed.
+    # vouching for the cached key rather than serve it unconfirmed. The retries in
+    # front of this exhaust and still fail closed — availability defence, same verdict.
     down["flag"] = True
     now[0] = 11.0
     with pytest.raises(IssuerUnreachable):
@@ -325,3 +327,134 @@ def test_real_socket_round_trip_via_default_httpx_fetch():
     assert resolved["human"] == "alice"
     assert resolved["actor_chain"] == ["planner"]
     assert resolved["issuer_path"] == [iss]
+
+
+# --- Availability defences on the JWKS fetch: retry/backoff + circuit breaker ---
+# These preserve fail-closed. A transient blip is retried; a persistently down
+# issuer trips a per-issuer breaker that fails FAST (still raising, never serving
+# stale) until a cooldown lets one trial through. Exercised against `_JWKSKeys`
+# directly with an injected clock and a no-op sleep so no real time is spent.
+
+from crumb.federation import _JWKSKeys, CrossIssuerError
+
+
+def _key_source(fetch, *, now, **resilience):
+    """A `_JWKSKeys` over an injected fetch, a controllable monotonic clock, and a
+    no-op sleep. `ttl=0` forces every `get()` to reconfirm, so each call is one
+    fresh load attempt — the unit we want to test."""
+    resilience.setdefault("sleep", lambda _s: None)
+    return _JWKSKeys("https://idp.local/jwks", fetch=fetch, ttl=0,
+                     clock=lambda: now[0], **resilience)
+
+
+def test_transient_failure_is_retried_then_succeeds():
+    """A blip on the first attempt is absorbed by the retry, and a subsequent good
+    fetch closes the breaker (failure count reset)."""
+    host = _JWKSHost("https://idp.local")
+    calls = {"n": 0}
+
+    def fetch(url):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionError("transient")
+        return host.issuer.jwks()
+
+    src = _key_source(fetch, now=[0.0], retries=2)
+    key = src.get(host.issuer.kid)
+    assert key is not None
+    assert calls["n"] == 2          # failed once, retried once, succeeded
+    assert src._consec_failures == 0
+
+
+def test_retries_are_bounded_then_fail_closed():
+    """A fetch that always fails is attempted exactly `retries + 1` times, then
+    raises `IssuerUnreachable` — bounded, never an infinite retry, never stale."""
+    calls = {"n": 0}
+
+    def fetch(url):
+        calls["n"] += 1
+        raise ConnectionError("down")
+
+    src = _key_source(fetch, now=[0.0], retries=3)
+    with pytest.raises(IssuerUnreachable):
+        src.get("some-kid")
+    assert calls["n"] == 4          # 1 initial + 3 retries
+
+
+def test_semantic_refusal_is_not_retried_or_counted():
+    """A semantic refusal (issuer publishes no usable key / an `UntrustedIssuer`)
+    is not an availability failure: it propagates on the first attempt, is never
+    retried, and never moves the breaker toward opening."""
+    calls = {"n": 0}
+
+    def fetch(url):
+        calls["n"] += 1
+        raise UntrustedIssuer("nope")
+
+    src = _key_source(fetch, now=[0.0], retries=3, breaker_threshold=1)
+    with pytest.raises(UntrustedIssuer):
+        src.get("some-kid")
+    assert calls["n"] == 1                      # no retry
+    assert src._consec_failures == 0            # breaker untouched
+    assert src._circuit_open_until is None
+
+
+def test_circuit_opens_after_threshold_and_fails_fast():
+    """After `breaker_threshold` consecutive failed loads the breaker opens: the
+    next call fails WITHOUT touching the fetch (fast), and still raises
+    (fail-closed, never serves stale)."""
+    calls = {"n": 0}
+
+    def fetch(url):
+        calls["n"] += 1
+        raise ConnectionError("down")
+
+    now = [0.0]
+    src = _key_source(fetch, now=now, retries=0,
+                      breaker_threshold=2, breaker_cooldown=30)
+
+    for _ in range(2):                          # two failed loads -> breaker opens
+        with pytest.raises(IssuerUnreachable):
+            src.get("k")
+    assert calls["n"] == 2
+    assert src._circuit_open_until is not None
+
+    # Breaker open: this call must NOT reach the fetch.
+    with pytest.raises(IssuerUnreachable):
+        src.get("k")
+    assert calls["n"] == 2                       # fetch not called while open
+
+
+def test_circuit_half_opens_after_cooldown_and_recovers():
+    """Once the cooldown lapses the breaker half-opens: one trial fetch runs, and a
+    success closes it and resumes normal service."""
+    host = _JWKSHost("https://idp.local")
+    state = {"down": True, "n": 0}
+
+    def fetch(url):
+        state["n"] += 1
+        if state["down"]:
+            raise ConnectionError("down")
+        return host.issuer.jwks()
+
+    now = [0.0]
+    src = _key_source(fetch, now=now, retries=0,
+                      breaker_threshold=1, breaker_cooldown=30)
+
+    with pytest.raises(IssuerUnreachable):      # opens the breaker
+        src.get(host.issuer.kid)
+    calls_when_open = state["n"]
+
+    # Still inside cooldown: fail fast, fetch untouched.
+    now[0] = 10.0
+    with pytest.raises(IssuerUnreachable):
+        src.get(host.issuer.kid)
+    assert state["n"] == calls_when_open
+
+    # Cooldown lapsed + issuer recovered: the trial fetch runs and closes the breaker.
+    now[0] = 31.0
+    state["down"] = False
+    assert src.get(host.issuer.kid) is not None
+    assert state["n"] == calls_when_open + 1
+    assert src._circuit_open_until is None
+    assert src._consec_failures == 0

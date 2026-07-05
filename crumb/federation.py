@@ -295,22 +295,75 @@ class _JWKSKeys:
     stdlib-equivalent is `jwt.PyJWKClient`; we keep an explicit cache here so the
     trust boundary — issuer URL in, key out — stays legible in one place."""
 
-    def __init__(self, jwks_uri: str, fetch=None, ttl: float = 300, clock=None):
+    def __init__(self, jwks_uri: str, fetch=None, ttl: float = 300, clock=None,
+                 *, retries: int = 2, backoff: float = 0.5, sleep=None,
+                 breaker_threshold: int = 3, breaker_cooldown: float = 30.0):
         self.jwks_uri = jwks_uri
         self._fetch = fetch or _http_get_json
         self._ttl = ttl
         self._clock = clock or time.monotonic
+        # Availability defences around the fetch (see `_fetch_jwks`). Both preserve
+        # fail-closed; they only trade retry latency for a faster refusal.
+        self._retries = retries
+        self._backoff = backoff
+        self._sleep = sleep or time.sleep
+        self._breaker_threshold = breaker_threshold
+        self._breaker_cooldown = breaker_cooldown
         self._by_kid: dict = {}
         self._fetched_at: float | None = None
+        self._consec_failures = 0
+        self._circuit_open_until: float | None = None
+
+    def _fetch_jwks(self) -> dict:
+        """Fetch the JWKS with bounded retries and a per-issuer circuit breaker.
+
+        Both are availability defences that PRESERVE fail-closed. A transient blip
+        (one dropped connection, a brief 5xx) shouldn't collapse verification, so
+        the fetch is retried a few times with exponential backoff. Once an issuer
+        fails persistently the breaker OPENS and every subsequent call fails fast:
+        it still raises `IssuerUnreachable` and never serves a stale key, it just
+        skips the retry latency until a cooldown lets one trial fetch through
+        (half-open). The breaker trades retry latency for a quick refusal; it never
+        trades security for availability.
+
+        Semantic refusals (`UntrustedIssuer` / `UnknownSigningKey`) are not
+        availability failures, so they propagate immediately and never retry or
+        trip the breaker. Note the worst-case latency of the first failing load is
+        `(retries + 1)` fetch timeouts plus backoff; tune `retries`/`backoff` and
+        the underlying fetch timeout together for a slow (as opposed to refused)
+        issuer."""
+        now = self._clock()
+        if self._circuit_open_until is not None and now < self._circuit_open_until:
+            raise IssuerUnreachable(
+                f"JWKS circuit open for {self.jwks_uri}: issuer failed "
+                f"{self._consec_failures}x, cooling down before the next attempt")
+
+        last_exc: Exception | None = None
+        for attempt in range(self._retries + 1):
+            try:
+                doc = self._fetch(self.jwks_uri)
+            except CrossIssuerError as e:
+                if not isinstance(e, IssuerUnreachable):
+                    raise                       # semantic refusal: never retried
+                last_exc = e                    # availability failure: retryable
+            except Exception as e:              # network/transport failure
+                last_exc = e
+            else:
+                self._consec_failures = 0       # a good fetch closes the breaker
+                self._circuit_open_until = None
+                return doc
+            if attempt < self._retries:
+                self._sleep(self._backoff * (2 ** attempt))
+
+        self._consec_failures += 1
+        if self._consec_failures >= self._breaker_threshold:
+            self._circuit_open_until = self._clock() + self._breaker_cooldown
+        raise IssuerUnreachable(
+            f"could not fetch JWKS at {self.jwks_uri} after "
+            f"{self._retries + 1} attempt(s): {last_exc!r}") from last_exc
 
     def _load(self) -> None:
-        try:
-            doc = self._fetch(self.jwks_uri)
-        except CrossIssuerError:
-            raise
-        except Exception as e:                  # network/transport failure
-            raise IssuerUnreachable(
-                f"could not fetch JWKS at {self.jwks_uri}: {e!r}") from e
+        doc = self._fetch_jwks()
         by_kid = {}
         for jwk in doc.get("keys", []):
             kid = jwk.get("kid")
@@ -387,20 +440,26 @@ class Federation:
         return self
 
     def trust_jwks_uri(self, iss: str, jwks_uri: str, fetch=None,
-                       ttl: float = 300, clock=None) -> "Federation":
+                       ttl: float = 300, clock=None,
+                       resilience: dict | None = None) -> "Federation":
         """Trust an issuer by its JWKS endpoint: fetch its current keys on demand
         instead of pinning one. This is the trustless steady state — the verifier
         commits to the issuer's URL, and rotation is handled downstream. `ttl`
         bounds how long a cached key is trusted before it must be reconfirmed
         against the live JWKS (this is what lets a revoked key drop out); tighten it
         to propagate revocations faster, at the cost of more fetches. `fetch`/`clock`
-        override the default HTTPS GET / monotonic clock (tests/in-process demos)."""
-        self._sources[iss] = _JWKSKeys(jwks_uri, fetch=fetch, ttl=ttl, clock=clock)
+        override the default HTTPS GET / monotonic clock (tests/in-process demos).
+        `resilience` tunes the availability defences on the fetch — any of
+        `retries`, `backoff`, `sleep`, `breaker_threshold`, `breaker_cooldown`
+        (see `_JWKSKeys`); it never relaxes fail-closed."""
+        self._sources[iss] = _JWKSKeys(jwks_uri, fetch=fetch, ttl=ttl, clock=clock,
+                                       **(resilience or {}))
         return self
 
     def trust_discovery(self, iss: str, fetch=None,
                         discovery_url: str | None = None,
-                        ttl: float = 300, clock=None) -> "Federation":
+                        ttl: float = 300, clock=None,
+                        resilience: dict | None = None) -> "Federation":
         """Trust an issuer the way OIDC intends: read its
         `/.well-known/openid-configuration`, take the advertised `jwks_uri`, and
         fetch keys from there. The verifier names only the issuer; the issuer's own
@@ -414,7 +473,8 @@ class Federation:
         if not jwks_uri:
             raise UntrustedIssuer(
                 f"issuer {iss!r} discovery document has no jwks_uri")
-        return self.trust_jwks_uri(iss, jwks_uri, fetch=fetch, ttl=ttl, clock=clock)
+        return self.trust_jwks_uri(iss, jwks_uri, fetch=fetch, ttl=ttl, clock=clock,
+                                   resilience=resilience)
 
     def key_for(self, iss: str | None, kid: str | None = None):
         """Resolve the verifying key for a token, by issuer and (when present) key
