@@ -38,6 +38,7 @@ from . import auth
 from .federation import (
     Federation,
     Issuer,
+    RevokedSigningKey,
     UnknownSigningKey,
     UntrustedIssuer,
     verify_chain,
@@ -177,10 +178,34 @@ def main() -> None:
         except UnknownSigningKey:
             print("   after TTL    rejected (UnknownSigningKey) — reconfirmed, key is gone")
 
+        # The TTL is the backstop — eventual, bounded by how long you're willing to
+        # honor a stale cache. When you already KNOW a key is compromised, waiting a
+        # window is a window too long. Push-invalidation refuses it now, on a normal
+        # verifier, no short TTL required.
+        print("\n6. A operator push-invalidates a compromised key (instant, normal TTL)")
+        tok_now = idp_b.issuer.exchange(
+            idp_a.issuer.exchange(
+                auth.login("alice", directives=(RESOURCE,)).token, "planner", RESOURCE, Federation()),
+            "researcher", RESOURCE, Federation().trust(idp_a.issuer))
+        assert verify_chain(tok_now, RESOURCE, verifier)["human"] == "alice"
+        print("   before       verifies — key is live and current")
+        verifier.revoke(idp_a.iss, idp_a.issuer.kid)   # the instant path
+        try:
+            verify_chain(tok_now, RESOURCE, verifier)
+            print("   after revoke UNEXPECTEDLY ACCEPTED  <-- bug")
+        except RevokedSigningKey:
+            print("   after revoke rejected (RevokedSigningKey) — now, not in a TTL window")
+        # Subtract-only: revoking A's key cannot make a DIFFERENT issuer's token
+        # verify. A revocation only ever removes trust.
+        tok_b_only = idp_b.issuer.exchange(
+            auth.login("bob", directives=(RESOURCE,)).token, "planner", RESOURCE, Federation())
+        assert verify_chain(tok_b_only, RESOURCE, verifier)["human"] == "bob"
+        print("   B's own key  still verifies — revocation subtracts, never adds")
+
         print("\nThe verifier fetched every key from the issuer that owns it, followed a")
-        print("rotation with no redeploy, dropped a revoked key within its TTL, and still")
-        print("trusted only the issuers it named. Pinning was never required; trusting the")
-        print("log-holder never happened.")
+        print("rotation with no redeploy, dropped a revoked key within its TTL, killed a")
+        print("known-compromised key instantly, and still trusted only the issuers it named.")
+        print("Pinning was never required; trusting the log-holder never happened.")
     finally:
         srv_a.should_exit = True
         srv_b.should_exit = True

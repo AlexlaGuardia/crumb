@@ -57,12 +57,16 @@ token header's `kid`. Two properties are load-bearing and worth stating plainly:
     arrives signed by a `kid` we haven't seen, the source refetches once before
     giving up. A rotated issuer keeps verifying with no redeploy; a genuinely
     unknown key is refused (`UnknownSigningKey`), not guessed at.
-  - It follows revocation. A cached key is trusted for a bounded `ttl`; past that
-    the cache is reconfirmed against the live JWKS before it is served again. When
-    an issuer drops a compromised key, tokens signed by it stop verifying within
-    one TTL window. The reconfirm fails closed — if the issuer is unreachable we
-    refuse rather than serve a key past its confirmed lifetime, so an attacker who
-    can stall the fetch cannot extend a revoked key.
+  - It follows revocation, two ways. The BACKSTOP is polling: a cached key is
+    trusted for a bounded `ttl`; past that the cache is reconfirmed against the live
+    JWKS before it is served again, so a dropped key stops verifying within one TTL
+    window even if nobody flagged it. The reconfirm fails closed — an unreachable
+    issuer is refused, never served stale, so stalling the fetch can't extend a
+    revoked key. The INSTANT path is push-invalidation (`Federation.revoke`): a key
+    you already know is compromised is tombstoned and refused NOW, ahead of the TTL.
+    Push-invalidation is sound because it is subtract-only — a revocation can make
+    verification stricter, never looser — so it never reintroduces trust in whoever
+    delivers the signal (`RevokedSigningKey`).
 
 A pinned PEM and a JWKS URL are two sources of the SAME trust set — mix them per
 issuer. Pin the key you already hold out of band; fetch the ones that rotate.
@@ -110,6 +114,16 @@ class UnknownSigningKey(CrossIssuerError):
     `UntrustedIssuer`: we federate with the issuer, we just can't find the key it
     claims to have signed with. Refused, never guessed (a token whose `kid` we
     can't resolve is unverifiable, not merely inconvenient)."""
+
+
+class RevokedSigningKey(CrossIssuerError):
+    """A key was explicitly revoked (push-invalidation) and is refused NOW,
+    independent of any cache TTL. Distinct from `UnknownSigningKey`: the key was
+    known and is being actively killed, not merely absent — so a reader can tell
+    "compromised, pulled" from "never heard of it." A revocation only ever
+    SUBTRACTS from the trusted set: marking a `kid` revoked can make verification
+    stricter, never looser, so a token signed by it stops verifying the instant the
+    revocation lands rather than waiting out the TTL reconfirm."""
 
 
 class IssuerUnreachable(CrossIssuerError):
@@ -393,6 +407,14 @@ class _JWKSKeys:
             self._load()                    # rotation: a new kid mid-ttl, refetch once
         return self._by_kid.get(kid)
 
+    def evict(self, kid: str) -> None:
+        """Drop a `kid` from the live cache immediately. Called on push-revocation
+        so a compromised key does not linger in the served set until the next TTL
+        reconfirm. `key_for` already refuses a revoked kid regardless; this just
+        keeps the cache from vouching for a key we've killed. Idempotent — a kid we
+        don't currently hold is a no-op."""
+        self._by_kid.pop(kid, None)
+
 
 def _http_get_json(url: str) -> dict:
     """Default JWKS/discovery fetch: an HTTPS GET returning parsed JSON. Imported
@@ -418,6 +440,9 @@ class Federation:
 
     def __init__(self):
         self._sources: dict = {}
+        # Push-invalidation tombstones: (iss, kid) pairs refused NOW, ahead of any
+        # TTL reconfirm. Subtract-only — see `revoke`.
+        self._revoked: set = set()
 
     def _pinned(self, iss: str) -> "_PinnedKeys":
         src = self._sources.get(iss)
@@ -476,11 +501,50 @@ class Federation:
         return self.trust_jwks_uri(iss, jwks_uri, fetch=fetch, ttl=ttl, clock=clock,
                                    resilience=resilience)
 
+    def revoke(self, iss: str, kid: str) -> "Federation":
+        """Push-invalidate a signing key: refuse it NOW, without waiting for the TTL
+        reconfirm to notice the issuer dropped it. This is the instant path for a
+        key you already know is compromised; the TTL reconfirm stays as the backstop
+        for revocations nobody pushed.
+
+        The property that keeps this sound is asymmetry: a revocation can only
+        SUBTRACT from the trusted set, never add to it. Marking a `kid` revoked can
+        at most make the verifier refuse tokens (fail-closed); it can never make a
+        forged token verify. So the signal moves only in the safe direction and does
+        not reintroduce trust in whoever delivers it — the worst a bogus revocation
+        does is a self-inflicted denial, not an acceptance. That asymmetry is what
+        lets the transport (a webhook, an admin call, a shared feed) carry a low
+        authorization bar without reopening the operator-trust hole Crumb exists to
+        close.
+
+        Permanent by design: a `kid` names one key, and a revoked key's id is not
+        reused, so the tombstone never lifts. A rotated issuer signs under a NEW
+        kid, which this does not touch."""
+        if kid is None:
+            raise ValueError("revoke requires a kid: revocation targets one specific key")
+        self._revoked.add((iss, kid))
+        # Best-effort cache hygiene: drop the dead key from a live JWKS source so it
+        # doesn't linger in the served set. `key_for` refuses it regardless.
+        src = self._sources.get(iss)
+        if isinstance(src, _JWKSKeys):
+            src.evict(kid)
+        return self
+
+    def is_revoked(self, iss: str | None, kid: str | None) -> bool:
+        """Whether `(iss, kid)` has been push-invalidated. Exposed so a caller can
+        distinguish a revoked key from an unknown one without catching the raise."""
+        return (iss, kid) in self._revoked
+
     def key_for(self, iss: str | None, kid: str | None = None):
         """Resolve the verifying key for a token, by issuer and (when present) key
-        id. `UntrustedIssuer` if the issuer isn't in the trust set at all;
-        `UnknownSigningKey` if it is but none of its keys match the `kid` — the two
-        failures a verifier must keep distinct."""
+        id. `RevokedSigningKey` if the key was push-invalidated (checked first, so
+        a revoked key is refused ahead of any cache/TTL logic); `UntrustedIssuer` if
+        the issuer isn't in the trust set at all; `UnknownSigningKey` if it is but
+        none of its keys match the `kid` — the failures a verifier must keep
+        distinct."""
+        if (iss, kid) in self._revoked:
+            raise RevokedSigningKey(
+                f"issuer {iss!r} key {kid!r} was revoked (push-invalidated)")
         src = self._sources.get(iss)
         if src is None:
             raise UntrustedIssuer(f"issuer not in federation trust set: {iss!r}")

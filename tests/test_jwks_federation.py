@@ -27,6 +27,7 @@ from crumb.federation import (
     Federation,
     IssuerUnreachable,
     Issuer,
+    RevokedSigningKey,
     UnknownSigningKey,
     UntrustedIssuer,
     verify_chain,
@@ -186,6 +187,82 @@ def test_revoked_key_is_trusted_within_ttl_then_dropped():
     with pytest.raises(UnknownSigningKey):
         verify_chain(token, RESOURCE, fed)
     assert host.hits["jwks"] == 2  # exactly one reconfirm fetch
+
+
+def test_push_invalidation_refuses_instantly_no_ttl_wait():
+    """The TTL is the eventual backstop; push-invalidation is the instant path. A
+    key that is live and verifying is refused the moment it's revoked, on a normal
+    (long) TTL, with no clock advance and no reconfirm fetch — the whole point is
+    not waiting out a window for a key you already know is dead."""
+    host = _JWKSHost("https://idp-a.local")
+    now = [0.0]
+    fed = Federation().trust_jwks_uri(
+        host.iss, host.jwks_url, fetch=host.fetch, ttl=3600, clock=lambda: now[0])
+
+    token = host.issuer.exchange(_human().token, "planner", RESOURCE, Federation())
+    assert verify_chain(token, RESOURCE, fed)["human"] == "alice"
+    assert host.hits["jwks"] == 1
+
+    fed.revoke(host.iss, host.issuer.kid)      # the operator knows it's compromised
+
+    # Refused NOW: no time passed, the cache is nowhere near its TTL, yet the token
+    # no longer verifies — and as a revocation, not a mere unknown key.
+    with pytest.raises(RevokedSigningKey):
+        verify_chain(token, RESOURCE, fed)
+    assert host.hits["jwks"] == 1              # instant: no reconfirm fetch needed
+    assert fed.is_revoked(host.iss, host.issuer.kid)
+
+
+def test_revocation_is_subtract_only():
+    """The property that keeps push-invalidation sound: a revocation can only
+    remove trust, never grant it. Revoking A's key must not make any other key
+    verify — a different issuer's own token keeps working untouched."""
+    host_a = _JWKSHost("https://idp-a.local")
+    host_b = _JWKSHost("https://idp-b.local")
+    fed = (Federation()
+           .trust_jwks_uri(host_a.iss, host_a.jwks_url, fetch=host_a.fetch)
+           .trust_jwks_uri(host_b.iss, host_b.jwks_url, fetch=host_b.fetch))
+
+    tok_a = host_a.issuer.exchange(_human("alice").token, "planner", RESOURCE, Federation())
+    tok_b = host_b.issuer.exchange(_human("bob").token, "planner", RESOURCE, Federation())
+    assert verify_chain(tok_a, RESOURCE, fed)["human"] == "alice"
+    assert verify_chain(tok_b, RESOURCE, fed)["human"] == "bob"
+
+    fed.revoke(host_a.iss, host_a.issuer.kid)
+
+    with pytest.raises(RevokedSigningKey):
+        verify_chain(tok_a, RESOURCE, fed)     # A's key is gone
+    assert verify_chain(tok_b, RESOURCE, fed)["human"] == "bob"  # B is untouched
+
+
+def test_revocation_is_distinct_from_unknown_and_evicts_cache():
+    """`RevokedSigningKey` (known key, actively killed) stays distinct from
+    `UnknownSigningKey` (never-seen kid), so a reader can tell compromise from
+    absence. And the dead key is evicted from the live cache, not merely shadowed
+    by the tombstone."""
+    host = _JWKSHost("https://idp-a.local")
+    src = Federation().trust_jwks_uri(host.iss, host.jwks_url, fetch=host.fetch)
+    kid = host.issuer.kid
+
+    token = host.issuer.exchange(_human().token, "planner", RESOURCE, Federation())
+    assert verify_chain(token, RESOURCE, src)["human"] == "alice"
+
+    src.revoke(host.iss, kid)
+    with pytest.raises(RevokedSigningKey):
+        verify_chain(token, RESOURCE, src)
+    # A kid the issuer never published is still a *different* failure.
+    assert src.is_revoked(host.iss, kid) and not src.is_revoked(host.iss, "never-seen")
+    # Evicted from the underlying cache, not just refused at key_for.
+    assert kid not in src._sources[host.iss]._by_kid
+
+
+def test_revoke_requires_a_kid():
+    """Revocation targets one specific key; a `None` kid is a programming error, not
+    a wildcard issuer revocation. Refuse it loudly rather than tombstone `(iss,
+    None)` and silently match nothing."""
+    fed = Federation()
+    with pytest.raises(ValueError):
+        fed.revoke("https://idp-a.local", None)
 
 
 def test_stale_cache_fails_closed_when_issuer_unreachable():
