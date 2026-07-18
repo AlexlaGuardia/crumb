@@ -58,16 +58,16 @@ Crumb is a flight recorder, not a control plane. Stopping things is a different 
 
 Attribution is only as strong as the gateway. Bypass it and there's no crumb, so the gateway has to be real and enforced, not optional.
 
-The multi-hop chain is single-issuer. One provider, one trust root. A chain that spans two different identity providers is genuinely unsolved at the standards level, and I'm not going to pretend otherwise.
+The multi-hop chain now spans two identity providers, with a caveat worth stating plainly. No RFC defines cross-issuer delegation, so Crumb closes it with a convention: each issuer's token staples the one before it, and verification walks the chain back to the human, checking every segment against its own issuer's key. It runs in the demo and rejects five different forgeries by name. What it rests on is an explicit federation trust set. You still decide which issuers you accept; I made that decision explicit instead of burying it. Calling it a solved standard would be the overclaim I'm trying to avoid.
 
 The ledger stores a hash of the arguments, not the raw arguments, to keep sensitive data out of the log. The tradeoff is that it proves an action happened and who directed it, not the exact bytes that were touched.
 
-And MCP attribution is permitted by the spec but rarely implemented upstream, so Crumb can stamp the record but can't force a non-compliant server to honor the human identity.
+MCP attribution is permitted by the spec but rarely implemented upstream, so Crumb can stamp the record but can't force a non-compliant server to honor the human identity.
 
 That's the gap between what's built and what's marketing. In this space, that gap is the whole thing.
 
 ## Try to break it
 
-The demo is live at [crumb.alexlaguardia.dev](https://crumb.alexlaguardia.dev). Seed some crumbs, tamper a row, watch verification flip. Hit the operator rollback and watch the external anchor catch a forgery that per-entry signing passes. The code is on GitHub.
+The demo is live at [crumb.alexlaguardia.dev](https://crumb.alexlaguardia.dev). Seed some crumbs, tamper a row, watch verification flip. Hit the operator rollback and watch the external anchor catch a forgery that per-entry signing passes. The code is on [GitHub](https://github.com/AlexlaGuardia/crumb).
 
 If you're building agent infrastructure and you've hit this, or you think I've got something wrong, I want to hear it.
