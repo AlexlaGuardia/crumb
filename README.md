@@ -57,6 +57,7 @@ pip install -r requirements.txt
 
 python -m crumb.demo               # the gap, then the gateway closing it
 python -m crumb.cross_vendor_demo  # same action over OpenAI + a REAL MCP HTTP hop
+python -m crumb.hijack_demo        # a poisoned tool hijacks the agent; the crumb pins it on the agent, not the human
 python -m crumb.tamper_demo        # write crumbs, verify, edit one, watch it break
 python -m crumb.anchor_demo        # the operator rollback the anchor catches
 python -m crumb.actor_binding_demo # operator forges the HUMAN, the token proves the truth
@@ -83,6 +84,7 @@ What each one shows:
 
 - **demo**: a human authenticates, an agent reads a "regulated" record, and the crumb ties the action back to them.
 - **cross_vendor_demo**: the same read driven once as an OpenAI function-call and once as a real MCP `tools/call` over HTTP to `records-mcp`. Both trace to the same human in one schema. Then, over that same wire, the same call with a service-account token (the human is gone) versus a delegation token (the human survives). That delta is the product.
+- **hijack_demo**: the attack Crumb is built for. A poisoned tool description drives the agent into two calls the human never authorized — a same-verb read of a patient she never named, and an export to an attacker. alice scoped her session to `read_record(42)`; the read of record 43 and the export both land `unauthorized`, directive null, pinned on the agent. The read of 43 is the sharp one: same tool name, different resource, so a verb-only check clears it — the argument scope is what catches it, and it flags even though the call *succeeds* against a real record. The ledger still verifies; the point is who each call is pinned on.
 - **tamper_demo**: a careless edit. Verification catches it at the exact row.
 - **anchor_demo**: the one to watch. A key-holding operator rewrites a crumb *and re-signs the entire chain*, so per-entry `verify` passes the forgery. The Rekor anchor catches it, because the rewritten root is not the one already public.
 - **actor_binding_demo**: anchor_demo catches a rewritten *record*; this catches a rewritten *human*. The operator edits `actor_identity` and re-signs, so integrity passes over their own log. But the crumb carries the delegation token, and `crumb verify --federation` re-walks it to the root issuer: the token still proves `alice`, the record claims `mallory`, and the human the operator can't re-sign is the one that wins. The recorded human stops being their word.
@@ -93,6 +95,7 @@ What each one shows:
 ## Honest scope
 
 - Attribution is only as good as the gateway's interposition. Bypass the proxy and attribution is void. The demo enforces the chokepoint; the tool refuses calls without a valid token.
+- Reconciliation is only as tight as the directive's scope. A directive can be verb-level (authorize `read_record`, any record) or scoped to arguments (`read_record` for record 42 only). Verb-level is a deliberate choice, not an oversight — it authorizes any call to that tool, so it can't distinguish a same-verb hijack. Scope the directive to the resource and it can. The authorizer picks the granularity; Crumb records against whatever they chose and never silently widens it.
 - OpenAI function-calling has zero native identity. The binding is a runtime convention, not a protocol guarantee. Crumb secures a runtime, not a wire format.
 - MCP attribution is permitted by the spec but rarely implemented. `records-mcp` reads the human off the token over a real HTTP wire; most deployments send a shared service-account token instead and the human never makes it across. Crumb stamps the record, but it can't force a non-compliant upstream to *act* on the human identity.
 - The MCP transport here is plain JSON-RPC over HTTP with bearer auth. Streamable-HTTP/SSE framing (session ids, event streams) is the documented upgrade and changes the envelope, not the attribution.
