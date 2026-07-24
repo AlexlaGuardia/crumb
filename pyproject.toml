@@ -3,10 +3,40 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "crumb"
+name = "crumb-attest"
 version = "0.1.0"
-description = "Prove which human directed an AI agent's action — tamper-evident flight recorder."
+description = "Prove which human directed an AI agent's action — tamper-evident flight recorder for MCP and OpenAI function-calling."
+readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Alex LaGuardia", email = "alex@alexlaguardia.dev" }]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "ai-agents",
+    "attribution",
+    "audit-log",
+    "provenance",
+    "oauth",
+    "rfc8693",
+    "sigstore",
+    "transparency-log",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: System :: Logging",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
 dependencies = [
     "PyJWT>=2.10",
     "cryptography>=44",
@@ -17,6 +47,11 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8", "ruff>=0.6"]
+
+[project.urls]
+Homepage = "https://crumb.alexlaguardia.dev"
+Repository = "https://github.com/AlexlaGuardia/crumb"
+Issues = "https://github.com/AlexlaGuardia/crumb/issues"
 
 [project.scripts]
 crumb = "crumb.cli:main"

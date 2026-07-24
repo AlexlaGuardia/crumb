@@ -50,11 +50,35 @@ Four moves:
 
 **Cross-vendor by design.** An OpenAI function-call and an MCP `tools/call` are two different wires with the same gap: neither carries the human. Both normalize to one `ToolCall`, flow through the same gateway, and land in one canonical crumb schema, distinguished only by a `transport` field. Attribution is a property of the runtime, not the wire, so it survives a change of wire.
 
+## Install
+
+```bash
+pip install crumb-attest
+```
+
+The distribution is `crumb-attest`; it imports and runs as `crumb` (the name `crumb`
+was already taken on PyPI). Verify the install:
+
+```bash
+crumb --help
+```
+
+Or run it without installing anything:
+
+```bash
+uvx --from crumb-attest crumb --help
+```
+
+From a clone, for development:
+
+```bash
+pip install -e ".[test]"
+pytest
+```
+
 ## Quickstart
 
 ```bash
-pip install -r requirements.txt
-
 python -m crumb.demo               # the gap, then the gateway closing it
 python -m crumb.cross_vendor_demo  # same action over OpenAI + a REAL MCP HTTP hop
 python -m crumb.hijack_demo        # a poisoned tool hijacks the agent; the crumb pins it on the agent, not the human
