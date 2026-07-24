@@ -66,9 +66,11 @@ class VigilAttributor:
         authorized = claims.get("directives", [])
 
         tool = event.get("tool_name", "<unknown>")
-        # RECONCILE INTENT — did the human actually authorize this action? A poisoned
-        # tool that fires without a matching directive has no human authority behind it.
-        is_authorized = tool in authorized
+        # RECONCILE INTENT — did the human actually authorize this action? Match the
+        # tool name AND the argument scope, so a same-verb call against a resource the
+        # human never named has no human authority behind it. A poisoned tool that
+        # fires without a matching directive lands unauthorized.
+        is_authorized, _ = auth.authorizes(authorized, tool, event.get("arguments") or {})
 
         fields = {
             "actor_identity": human,

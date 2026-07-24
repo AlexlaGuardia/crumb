@@ -117,6 +117,61 @@ def test_hijack_ledger_still_verifies():
         assert ok, f"hijack ledger failed verification: {report}"
 
 
+def test_scoped_directive_flags_same_verb_over_read():
+    """The case a verb-only check waves through. alice authorizes read_record FOR
+    RECORD 42. A hijack makes a same-verb call to record 43 — different resource,
+    identical tool name. Scoped reconciliation flags the 43 read unauthorized while
+    the 42 read stays delegated, so the over-read is pinned on the agent."""
+    with tempfile.TemporaryDirectory() as td:
+        gw = Gateway(ledger=_ledger(Path(td))[0], agent_id="agent-scope")
+        session = auth.login("alice", directives=(("read_record", {"record_id": 42}),))
+
+        ok = gw.dispatch(
+            session, ToolCall(name="read_record", arguments={"record_id": 42}),
+            ts="2026-07-24T12:00:00+00:00",
+        ).record
+        over = gw.dispatch(
+            session, ToolCall(name="read_record", arguments={"record_id": 43}),
+            ts="2026-07-24T12:00:01+00:00",
+        ).record
+
+        # Authorized resource: delegated, bound to alice's directive.
+        assert ok["directive"] == "read_record"
+        assert ok["on_behalf_assertion"] == "delegated"
+        # Same verb, unauthorized resource: no directive, pinned on the agent —
+        # exactly what verb-only matching (`call.name in authorized`) would miss.
+        assert over["action"] == "read_record"
+        assert over["directive"] is None
+        assert over["on_behalf_assertion"] == "unauthorized"
+        assert over["resource_id"]["record_id"] == 43
+
+
+def test_bare_string_directive_stays_verb_level():
+    """Backward compatibility: a directive given as a bare tool name (no scope)
+    authorizes any arguments to that tool, exactly as before scoping existed."""
+    with tempfile.TemporaryDirectory() as td:
+        gw = Gateway(ledger=_ledger(Path(td))[0], agent_id="agent-verb")
+        session = auth.login("alice", directives=("read_record",))
+        for rid in (42, 43, 999):
+            rec = gw.dispatch(
+                session, ToolCall(name="read_record", arguments={"record_id": rid}),
+            ).record
+            assert rec["on_behalf_assertion"] == "delegated"
+            assert rec["directive"] == "read_record"
+
+
+def test_authorizes_helper_matches_name_and_scope():
+    """Unit-level guarantee for the shared reconcile helper both the gateway and the
+    Vigil adapter call: name must match, and every constrained arg must equal."""
+    directives = [auth.normalize_directive(("read_record", {"record_id": 42}))]
+    assert auth.authorizes(directives, "read_record", {"record_id": 42}) == (True, "read_record")
+    assert auth.authorizes(directives, "read_record", {"record_id": 43}) == (False, None)
+    assert auth.authorizes(directives, "export_record", {"record_id": 42}) == (False, None)
+    # Verb-level directive constrains nothing.
+    verb = [auth.normalize_directive("read_record")]
+    assert auth.authorizes(verb, "read_record", {"record_id": 7}) == (True, "read_record")
+
+
 def test_attribution_is_channel_invisible():
     """The load-bearing claim: the export crumb is byte-identical regardless of
     channel — the gateway records the call, never the definition that poisoned it.

@@ -47,30 +47,83 @@ class Session:
     the gateway reads the human's INTENT from verified claims, never from the
     model. An action the human never authorized has no directive to point to, and
     that absence is exactly what exposes a hijacked tool call downstream.
+
+    Each directive is a normalized `{"action": str, "args": dict}`: the tool name,
+    plus an optional argument scope. An empty `args` is verb-level (any arguments
+    to that tool are authorized). A non-empty `args` binds the directive to a
+    resource — `read_record` scoped to `{"record_id": 42}` authorizes reading
+    record 42 and nothing else. The scope is what lets reconciliation tell apart
+    two calls to the SAME tool: the one the human named, and a same-verb call a
+    hijack slipped in against a different resource.
     """
 
     sub: str
     token: str
-    directives: tuple[str, ...] = ()
+    directives: tuple[dict, ...] = ()
 
     @property
     def human(self) -> str:
         return self.sub
 
 
-def login(user_id: str, directives: tuple[str, ...] = ()) -> Session:
+def normalize_directive(d) -> dict:
+    """Coerce a directive into canonical `{"action": str, "args": dict}` form.
+
+    Accepts three shapes so every existing caller keeps working:
+      - `"read_record"`                      → verb-level (args = {})
+      - `("read_record", {"record_id": 42})` → scoped to that resource
+      - `{"action": ..., "args": {...}}`     → already canonical
+    """
+    if isinstance(d, str):
+        return {"action": d, "args": {}}
+    if isinstance(d, (tuple, list)):
+        action = d[0]
+        args = d[1] if len(d) > 1 and d[1] else {}
+        return {"action": action, "args": dict(args)}
+    if isinstance(d, dict) and "action" in d:
+        return {"action": d["action"], "args": dict(d.get("args") or {})}
+    raise TypeError(f"unrecognized directive: {d!r}")
+
+
+def authorizes(directives, name: str, arguments: dict | None = None) -> tuple[bool, str | None]:
+    """Reconcile a tool call against the human's directives.
+
+    A call is authorized iff some directive matches the tool `name` AND every
+    argument the directive constrains equals the call's argument. A verb-level
+    directive (empty `args`) constrains nothing, so it authorizes any call to that
+    tool — the original behavior. A scoped directive additionally requires the
+    named resource to match, which is what stops a same-verb hijack (an authorized
+    `read_record(42)` does not authorize `read_record(43)`).
+
+    Returns `(True, name)` when authorized so the caller can point the crumb at the
+    authorizing directive, or `(False, None)` when nothing authorized it — the
+    absence that flags a call as unauthorized and pins it on the agent.
+    """
+    args = arguments or {}
+    for d in directives:
+        nd = d if (isinstance(d, dict) and "action" in d) else normalize_directive(d)
+        if nd["action"] != name:
+            continue
+        if all(args.get(k) == v for k, v in nd["args"].items()):
+            return True, name
+    return False, None
+
+
+def login(user_id: str, directives: tuple = ()) -> Session:
     """Stand-in for an OIDC login. Returns a session bound to the human's id and
-    the set of actions they authorized this session (by tool name). The model
+    the set of actions they authorized this session. Each directive is a tool name,
+    optionally scoped to specific arguments (see `normalize_directive`). The model
     cannot widen this set — it's signed into the session token at login."""
     now = int(time.time())
+    normalized = [normalize_directive(d) for d in directives]
     claims = {
         "sub": user_id,
-        "directives": list(directives),
+        "directives": normalized,
         "iat": now,
         "exp": now + _SESSION_TTL,
     }
     token = jwt.encode(claims, _DEV_SECRET, algorithm=_ALGO)
-    return Session(sub=user_id, token=token, directives=tuple(directives))
+    return Session(sub=user_id, token=token, directives=tuple(normalized))
 
 
 def verify_session(token: str) -> dict:

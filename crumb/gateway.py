@@ -60,12 +60,13 @@ class Gateway:
         authorized = claims.get("directives", [])
 
         # 1b. RECONCILE INTENT — is this call something the human actually directed?
-        #     If yes, point the crumb at the authorizing directive. If no, the crumb
-        #     records the action with NO human directive and flags it unauthorized —
-        #     that's how a prompt-injected/hijacked tool call is exposed and pinned
-        #     on the agent, not falsely on the human.
-        is_authorized = call.name in authorized
-        directive = call.name if is_authorized else None
+        #     Match on the tool name AND the argument scope the human authorized, so
+        #     an authorized read_record(42) does NOT clear a same-verb read_record(43)
+        #     the hijack slipped in. If a directive matches, point the crumb at it. If
+        #     none does, the crumb records the action with NO human directive and flags
+        #     it unauthorized — that's how a prompt-injected/hijacked call is exposed
+        #     and pinned on the agent, not falsely on the human.
+        is_authorized, directive = auth.authorizes(authorized, call.name, call.arguments)
         on_behalf = "delegated" if is_authorized else "unauthorized"
 
         # 2. BIND — get a delegation token carrying (human + agent), scoped to the tool.

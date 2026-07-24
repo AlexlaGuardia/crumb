@@ -270,7 +270,7 @@ def api_hijack() -> JSONResponse:
     rogue = find_unauthorized(ATTACK_LEDGER)
     report = verify_ledger(ATTACK_LEDGER, PUB)
     return JSONResponse({
-        "directives": list(session.directives),
+        "directives": [d["action"] for d in session.directives],
         "agent_id": "tracer-agent-v2",
         "attacker_dest": ATTACKER_DEST,
         "rows": rows,
