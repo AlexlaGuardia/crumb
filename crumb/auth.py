@@ -26,14 +26,34 @@ import jwt
 # unset, generate an ephemeral per-process secret so the public repo ships NO
 # usable signing key — tokens just don't survive a restart, fine for a demo. A
 # deployment that needs stable sessions sets the env var.
-_DEV_SECRET = os.environ.get("CRUMB_SESSION_SECRET")
-if not _DEV_SECRET:
-    _DEV_SECRET = secrets.token_hex(32)
-    print(
-        "crumb.auth: CRUMB_SESSION_SECRET unset — using an ephemeral per-process "
-        "secret (tokens won't survive restart). Set it for stable sessions.",
-        file=sys.stderr,
-    )
+_ENV_SECRET = os.environ.get("CRUMB_SESSION_SECRET")
+_EPHEMERAL_SECRET: str | None = None
+_WARNED = False
+
+
+def _secret() -> str:
+    """Resolve the session-signing secret, minting an ephemeral one on first use.
+
+    Deliberately lazy. Importing crumb, or running `crumb --help`, must print
+    nothing — a warning on `--help` is the first thing a new user sees and reads
+    as breakage. The notice belongs at the moment a token is actually signed or
+    verified with a throwaway key, and it fires once per process.
+    """
+    global _EPHEMERAL_SECRET, _WARNED
+    if _ENV_SECRET:
+        return _ENV_SECRET
+    if _EPHEMERAL_SECRET is None:
+        _EPHEMERAL_SECRET = secrets.token_hex(32)
+    if not _WARNED:
+        _WARNED = True
+        print(
+            "crumb.auth: CRUMB_SESSION_SECRET unset — using an ephemeral per-process "
+            "secret (tokens won't survive restart). Set it for stable sessions.",
+            file=sys.stderr,
+        )
+    return _EPHEMERAL_SECRET
+
+
 _ALGO = "HS256"
 _SESSION_TTL = 3600  # seconds
 
@@ -122,10 +142,10 @@ def login(user_id: str, directives: tuple = ()) -> Session:
         "iat": now,
         "exp": now + _SESSION_TTL,
     }
-    token = jwt.encode(claims, _DEV_SECRET, algorithm=_ALGO)
+    token = jwt.encode(claims, _secret(), algorithm=_ALGO)
     return Session(sub=user_id, token=token, directives=tuple(normalized))
 
 
 def verify_session(token: str) -> dict:
     """Verify a session token and return its claims. Raises on tamper/expiry."""
-    return jwt.decode(token, _DEV_SECRET, algorithms=[_ALGO])
+    return jwt.decode(token, _secret(), algorithms=[_ALGO])

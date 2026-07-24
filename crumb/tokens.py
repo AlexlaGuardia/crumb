@@ -36,14 +36,33 @@ import jwt
 # Delegation signing key. Demo-only: from CRUMB_DELEGATION_SECRET, else an
 # ephemeral per-process secret so the public repo ships no usable key. Mint and
 # verify happen in one process, so a per-process secret is sufficient.
-_DEV_SECRET = os.environ.get("CRUMB_DELEGATION_SECRET")
-if not _DEV_SECRET:
-    _DEV_SECRET = secrets.token_hex(32)
-    print(
-        "crumb.tokens: CRUMB_DELEGATION_SECRET unset — using an ephemeral "
-        "per-process secret. Set it for stable cross-process delegation.",
-        file=sys.stderr,
-    )
+_ENV_SECRET = os.environ.get("CRUMB_DELEGATION_SECRET")
+_EPHEMERAL_SECRET: str | None = None
+_WARNED = False
+
+
+def _secret() -> str:
+    """Resolve the delegation signing key, minting an ephemeral one on first use.
+
+    Lazy for the same reason as `crumb.auth._secret`: importing the package must
+    stay silent so `crumb --help` doesn't greet a new user with a warning. Fires
+    once per process, at the point a token is actually minted or verified.
+    """
+    global _EPHEMERAL_SECRET, _WARNED
+    if _ENV_SECRET:
+        return _ENV_SECRET
+    if _EPHEMERAL_SECRET is None:
+        _EPHEMERAL_SECRET = secrets.token_hex(32)
+    if not _WARNED:
+        _WARNED = True
+        print(
+            "crumb.tokens: CRUMB_DELEGATION_SECRET unset — using an ephemeral "
+            "per-process secret. Set it for stable cross-process delegation.",
+            file=sys.stderr,
+        )
+    return _EPHEMERAL_SECRET
+
+
 _ALGO = "HS256"
 _TTL = 60  # short-lived: one token per call
 
@@ -108,7 +127,7 @@ def mint_delegation(human_sub: str, agent_id: str, resource: str, ttl: int = _TT
         "iat": now,
         "exp": now + ttl,
     }
-    return jwt.encode(claims, _DEV_SECRET, algorithm=_ALGO)
+    return jwt.encode(claims, _secret(), algorithm=_ALGO)
 
 
 def extend_delegation(prior_token: str, new_agent_id: str, resource: str,
@@ -129,7 +148,7 @@ def extend_delegation(prior_token: str, new_agent_id: str, resource: str,
     if _idp_url():
         return exchange_delegation(prior_token, new_agent_id, resource, ttl=ttl)
 
-    prior = jwt.decode(prior_token, _DEV_SECRET, algorithms=[_ALGO],
+    prior = jwt.decode(prior_token, _secret(), algorithms=[_ALGO],
                        options={"verify_aud": False})
     act = {"sub": new_agent_id}
     if prior.get("act"):
@@ -143,7 +162,7 @@ def extend_delegation(prior_token: str, new_agent_id: str, resource: str,
         "iat": now,
         "exp": now + ttl,
     }
-    return jwt.encode(claims, _DEV_SECRET, algorithm=_ALGO)
+    return jwt.encode(claims, _secret(), algorithm=_ALGO)
 
 
 def actor_chain(claims: dict) -> list:
@@ -176,7 +195,7 @@ def mint_service_account(service_id: str, resource: str, ttl: int = _TTL) -> str
         "iat": now,
         "exp": now + ttl,
     }
-    return jwt.encode(claims, _DEV_SECRET, algorithm=_ALGO)
+    return jwt.encode(claims, _secret(), algorithm=_ALGO)
 
 
 def _rs256_public_key(token: str):
@@ -243,4 +262,4 @@ def verify_delegation(token: str, resource: str, *,
             f"resource {resource!r}; the shared-secret path is not a trust root "
             "in production"
         )
-    return jwt.decode(token, _DEV_SECRET, algorithms=[_ALGO], audience=resource)
+    return jwt.decode(token, _secret(), algorithms=[_ALGO], audience=resource)
