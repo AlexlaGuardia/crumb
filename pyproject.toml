@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crumb-attest"
-version = "0.1.0"
+version = "0.1.1"
 description = "Prove which human directed an AI agent's action — tamper-evident flight recorder for MCP and OpenAI function-calling."
 readme = "README.md"
 requires-python = ">=3.10"
