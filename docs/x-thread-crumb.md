@@ -1,7 +1,8 @@
-# X thread — Crumb overview (article #7)
-> Staged 2026-07-18. Pride-gated. Self-contained (whole story, no tease). Link in LAST post only.
+# X thread: Crumb overview (article #7)
+> Staged 2026-07-18, ending upgraded 2026-07-25 (pip install + live verify + Rekor-catches-forgery milestone).
+> Pride-gated. Self-contained (whole story, no tease). Link in LAST post only.
 > Alex posts (X flags automation signature, not volume). Paste per feedback_x_composer_paste.
-> Link resolves once the portfolio canonical is deployed: https://alexlaguardia.dev/writing/crumb
+> Writeup: https://alexlaguardia.dev/writing/crumb | demo: https://crumb.alexlaguardia.dev
 
 1/ an agent exported a patient record. it ran under a shared service account, so the audit log says the bot did it.. it never says which person told it to.
 
@@ -17,4 +18,13 @@
 
 7/ what it isn't: crumb doesn't stop actions, cerbos/capsule/astrix do that already. cross-issuer delegation still rests on a federation trust set i made explicit, not solved away.
 
-wrote the whole thing up: https://alexlaguardia.dev/writing/crumb
+8/ crumb's on pypi now.. `pip install crumb-attest`, real package, no version pin needed. point `crumb verify` at the live demo ledger and it checks the chain and signatures first.. then pulls sigstore's rekor entry live and compares it. green in about a second.
+
+9/ did it for real today.. clicked rollback on the demo. it rewrote a crumb and re-signed the whole chain with the key i hold. chain still checks out, internally consistent. merkle doesn't match rekor though, so verify catches it. reload and it heals itself back.
+
+10/ ~30 seconds, on your own machine.. install it, verify clean. then break it on the demo and watch crumb catch it, not me telling you it works.
+
+pip install crumb-attest
+crumb verify https://crumb.alexlaguardia.dev
+
+longer version: https://alexlaguardia.dev/writing/crumb
