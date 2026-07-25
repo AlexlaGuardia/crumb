@@ -359,3 +359,38 @@ def test_cross_issuer_refuses_an_overdeep_chain():
         tok = idp_b.exchange(tok, f"agent{i+1}", R, Federation().trust(idp_a).trust(idp_b))
     with pytest.raises(ChainTooDeep):
         verify_chain(tok, R, verifier)
+
+
+# ── anchor selection: a stale smaller anchor must not mask the valid larger one ──
+
+
+def test_merkle_verifies_strongest_anchor_not_last_appended(tmp_path):
+    """Regression for the live-demo false MISMATCH (2026-07-25).
+
+    Anchors accumulate as the ledger grows; append-order is not guaranteed to
+    equal tree_size-order. A stale, superseded checkpoint (smaller tree_size,
+    non-matching root) had landed AFTER the valid one, and the verifier trusted
+    anchors[-1] — so it recomputed against the stale anchor and reported a false
+    MISMATCH while the real anchor sat one line up. verify must check the anchor
+    over the largest committed prefix; that root subsumes every smaller one.
+    """
+    from crumb.cli import _run_verification
+
+    ledger = Ledger(str(tmp_path / "l.jsonl"), str(tmp_path / "l.key"))
+    pub = (tmp_path / "l.pub").read_bytes()
+    for i in range(4):
+        ledger.append({
+            "actor_identity": "alice", "agent_id": "a", "action": "read",
+            "resource_id": {"record_id": i}, "outcome": "success", "transport": "mcp",
+        })
+    entries = [json.loads(x) for x in ledger.path.read_text().splitlines() if x.strip()]
+    valid_root = merkle.root([e["entry_hash"].encode() for e in entries])  # over all 4
+
+    anchors = [
+        {"root": valid_root, "tree_size": 4, "ts": "2026-06-20T12:05:00+00:00"},   # valid, larger
+        {"root": "de" * 32, "tree_size": 2, "ts": "2026-06-25T13:05:00+00:00"},    # stale, smaller, appended LAST
+    ]
+    result = _run_verification(entries, pub, anchors)
+    assert result["merkle"]["ok"] is True, result["merkle"]
+    assert result["merkle"]["tree_size"] == 4
+    assert result["merkle"]["anchored_root"] == valid_root

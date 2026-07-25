@@ -181,7 +181,14 @@ def _run_verification(
             "binding": binding_result,
         }
 
-    latest = anchors[-1]
+    # Verify against the strongest checkpoint: the anchor over the largest
+    # committed prefix. Anchors accumulate as the ledger grows, and append-order
+    # is not guaranteed to equal tree_size-order — a stale or out-of-band
+    # checkpoint can land after a larger one. Trusting anchors[-1] blindly let a
+    # smaller, superseded anchor mask the valid one and report a false MISMATCH.
+    # The largest prefix subsumes every smaller one: a tamper anywhere in it
+    # breaks this root, so checking it is both robust and complete.
+    latest = max(anchors, key=lambda a: a["tree_size"])
     tree_size = latest["tree_size"]
     anchored_root = latest["root"]
 
