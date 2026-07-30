@@ -64,6 +64,13 @@ def _secret() -> str:
 
 
 _ALGO = "HS256"
+# Provider-signed algorithms this resource will accept. Which one shows up is the
+# authorization server's choice: AuthPlane signs ES256 off a P-256 key, so an
+# RS256-only check rejects a valid token from a conformant AS. Both are
+# asymmetric and PyJWT pairs each against its matching key type, so this is not
+# the HS256-confusion door — the dev symmetric path stays a separate branch that
+# a configured IdP refuses outright.
+_ASYMMETRIC_ALGOS = ("RS256", "ES256")
 _TTL = 60  # short-lived: one token per call
 
 # RFC 8693 token-exchange constants.
@@ -396,18 +403,18 @@ def verify_delegation(token: str, resource: str, *,
     (without), under either signing path."""
     require = bool(_idp_url()) if require_rs256 is None else require_rs256
     alg = jwt.get_unverified_header(token).get("alg")
-    if alg == "RS256":
+    if alg in _ASYMMETRIC_ALGOS:
         return jwt.decode(
             token,
             _rs256_public_key(token),
-            algorithms=["RS256"],
+            algorithms=[alg],
             audience=resource,
             **_issuer_opt(),
         )
     if require:
         raise jwt.InvalidAlgorithmError(
-            f"RS256 required (IdP configured) — refusing {alg!r} dev token at "
-            f"resource {resource!r}; the shared-secret path is not a trust root "
-            "in production"
+            f"provider-signed token required (IdP configured) — refusing {alg!r} "
+            f"dev token at resource {resource!r}; the shared-secret path is not a "
+            "trust root in production"
         )
     return jwt.decode(token, _secret(), algorithms=[_ALGO], audience=resource)

@@ -81,11 +81,17 @@ import uuid
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
-from jwt.algorithms import RSAAlgorithm
+from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 
 from . import auth
 
-_ALGO = "RS256"
+_ALGO = "RS256"          # what THIS system mints with
+# What it will VERIFY. A real authorization server picks its own curve or
+# modulus: AuthPlane signs ES256 off a P-256 key, and an RS256-only verifier
+# rejects a perfectly valid token from it. Both are asymmetric, and PyJWT pairs
+# each against the matching key type, so widening the accept list here does not
+# open the HS256 confusion path (a symmetric alg is still never in this list).
+_VERIFY_ALGOS = ["RS256", "ES256"]
 _TTL = 60  # short-lived: one token per call, same as the single-issuer path
 
 # A real human->agent->...->tool chain is a handful of hops. Each staple embeds
@@ -213,7 +219,7 @@ class Issuer:
         else:
             kid = jwt.get_unverified_header(subject_token).get("kid")
             key = federation.key_for(iss, kid)   # raises Untrusted/UnknownSigningKey
-        claims = jwt.decode(subject_token, key, algorithms=[_ALGO], issuer=iss,
+        claims = jwt.decode(subject_token, key, algorithms=_VERIFY_ALGOS, issuer=iss,
                             options={"verify_aud": False})
         return claims, True
 
@@ -251,13 +257,18 @@ class Issuer:
 
 
 def _jwk_to_key(jwk: dict):
-    """One JWKS entry -> a usable public key. RS256 only, matching what every
-    issuer in this system signs with; an unexpected key type is a refusal, not a
-    silent skip, so a malformed JWKS can't quietly shrink the trusted key set."""
+    """One JWKS entry -> a usable public key.
+
+    RSA and EC, because which one you meet is the issuer's choice, not ours —
+    AuthPlane's JWKS serves an EC P-256 key and an RSA-only reader simply cannot
+    talk to it. An unexpected key type is still a refusal rather than a silent
+    skip, so a malformed JWKS can't quietly shrink the trusted key set."""
     kty = jwk.get("kty")
-    if kty != "RSA":
-        raise UnknownSigningKey(f"unsupported JWKS key type {kty!r} (RSA only)")
-    return RSAAlgorithm.from_jwk(json.dumps(jwk))
+    if kty == "RSA":
+        return RSAAlgorithm.from_jwk(json.dumps(jwk))
+    if kty == "EC":
+        return ECAlgorithm.from_jwk(json.dumps(jwk))
+    raise UnknownSigningKey(f"unsupported JWKS key type {kty!r} (RSA or EC)")
 
 
 class _PinnedKeys:
@@ -612,7 +623,7 @@ def verify_chain(token: str, resource: str, federation: "Federation") -> dict:
         kid = jwt.get_unverified_header(current).get("kid")
         key = federation.key_for(iss, kid)  # raises Untrusted/UnknownSigningKey
         claims = jwt.decode(
-            current, key, algorithms=[_ALGO], issuer=iss,
+            current, key, algorithms=_VERIFY_ALGOS, issuer=iss,
             audience=resource if is_outer else None,
             options={"verify_aud": is_outer},
         )
