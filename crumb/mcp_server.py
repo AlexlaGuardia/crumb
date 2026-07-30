@@ -31,10 +31,16 @@ class Unauthorized(Exception):
 def _actor_from_token(bearer: str, resource: str) -> dict:
     """Read who is behind a call FROM THE TOKEN, never from the params.
 
-    Returns {"human": <sub or None>, "agent": <id>}. A delegation token carries
-    `act` (the agent acting for a human) → both are known. A service-account
-    token has no `act` → the agent is known but the human is gone. That gap, on
-    an otherwise identical wire, is the thing Crumb makes visible.
+    Returns `tokens.resolve_actor`'s view: {human, agent, chain, actor_type,
+    source, discrepancy}. A delegation token carries an actor (the agent acting
+    for a human) → both are known. A service-account token carries none → the
+    agent is known but the human is gone. That gap, on an otherwise identical
+    wire, is the thing Crumb makes visible.
+
+    The resolve step is deliberately NOT inlined here: reading identity off a
+    verified token is the same problem whatever the wire, and an authorization
+    server that stamps flat `agent_id`/`agent_chain` mirrors beside nested `act`
+    should be consumed the same way on the OpenAI path as on this one.
     """
     if not bearer:
         raise Unauthorized("missing bearer token")
@@ -43,10 +49,7 @@ def _actor_from_token(bearer: str, resource: str) -> dict:
     except Exception as e:  # bad signature, wrong audience, expired, malformed
         raise Unauthorized(f"invalid bearer token: {e}") from e
 
-    act = claims.get("act")
-    if act:  # delegation: human + agent both ride the token
-        return {"human": claims["sub"], "agent": act["sub"]}
-    return {"human": None, "agent": claims["sub"]}  # service account: human lost
+    return tokens.resolve_actor(claims)
 
 
 def tools_list() -> dict:

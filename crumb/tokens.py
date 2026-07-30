@@ -179,6 +179,108 @@ def actor_chain(claims: dict) -> list:
     return chain
 
 
+# An authorization server may stamp FLAT mirrors of the delegation chain beside
+# the nested RFC 8693 `act` — AuthPlane does, and says so explicitly: they exist
+# so a resource server reading identity on every call doesn't walk the nested
+# tree per request. Names confirmed against docs.authplane.ai/sdks/python.
+_FLAT_AGENT = "agent_id"
+_FLAT_CHAIN = "agent_chain"
+
+
+def _flat_chain(claims: dict, outermost: str | None) -> tuple[list, str | None]:
+    """Read a flat `agent_chain` and normalize it to most-recent-actor-first.
+
+    The flat claim's ORDER is not something we get to assume. Crumb's convention
+    is most-recent-first (`actor_chain`); an AS may well emit oldest-first. So we
+    orient it against the one actor we already know is authoritative — the token's
+    `agent_id` / outermost `act.sub` — rather than guessing: whichever end of the
+    chain that actor sits on tells us which way the list runs. A single-element
+    chain is orientation-free. If it sits on NEITHER end the two representations
+    genuinely disagree, and we say so instead of silently picking one.
+
+    Returns (chain-most-recent-first, discrepancy-or-None).
+    """
+    chain = claims.get(_FLAT_CHAIN)
+    if not isinstance(chain, list) or not chain:
+        return [], None
+    chain = list(chain)
+    if outermost is None or len(chain) == 1:
+        return chain, None
+    if chain[0] == outermost:
+        return chain, None
+    if chain[-1] == outermost:
+        return list(reversed(chain)), None   # AS emitted oldest-first
+    return chain, (
+        f"{_FLAT_CHAIN} {chain!r} contains no end matching the authoritative "
+        f"actor {outermost!r} — orientation undecidable"
+    )
+
+
+def resolve_actor(claims: dict) -> dict:
+    """Resolve WHO is behind one call, from already-verified token claims.
+
+    This is the consume side of delegation: whatever the authorization server
+    minted, a resource server has to turn it into "which human, via which agent"
+    at the moment a tool runs. Crumb records that per call; the token only
+    asserted it once, at mint time, before any of these calls existed.
+
+    The rules, which are the AS's rules and not ours:
+
+      - `sub` stays the human for the life of the chain. It is never rewritten
+        by a hop, so it is the attribution anchor.
+      - The OUTERMOST actor — flat `agent_id`, else the first nested `act.sub` —
+        is whoever actually holds the token at call time. That one is
+        authoritative. Inner hops are audit-only: they say how the token got
+        here, not who is allowed to use it.
+      - Flat claims win when present, because that is what they are for. The
+        nested walk stays as the fallback for a plain RFC 8693 issuer that
+        stamps no mirrors.
+      - No actor at all means a service-account token: an agent is known, no
+        human ever rode it. That absence, on a byte-identical wire, is the gap
+        Crumb exists to make visible — so it is reported, not treated as an error.
+
+    Returns {human, agent, chain, actor_type, source, discrepancy}. `source` names
+    which representation answered ("flat" | "act" | "none") and `discrepancy`
+    carries a human-readable note when a token's two representations of the same
+    chain don't agree. Neither changes the answer; both exist because a flight
+    recorder that quietly normalizes away a contradiction has destroyed the one
+    detail worth recording.
+    """
+    nested = actor_chain(claims)                      # most-recent-first, may be []
+    flat_agent = claims.get(_FLAT_AGENT)
+    outermost = flat_agent or (nested[0] if nested else None)
+    flat, discrepancy = _flat_chain(claims, outermost)
+
+    # actor_type describes the actor holding the token. Her spelling is
+    # `act.actor_type`; the SDK reference also lists it top-level. Read both.
+    act = claims.get("act")
+    actor_type = None
+    if isinstance(act, dict):
+        actor_type = act.get("actor_type")
+    if actor_type is None:
+        actor_type = claims.get("actor_type")
+
+    if flat_agent is not None:
+        source, chain = "flat", (flat or [flat_agent])
+        # Both representations present: they describe the same chain, so a
+        # mismatch is a real signal about the issuer, not noise to smooth over.
+        if nested and discrepancy is None and chain != nested:
+            discrepancy = (
+                f"flat chain {chain!r} disagrees with nested `act` chain "
+                f"{nested!r} in the same token"
+            )
+    elif nested:
+        source, chain = "act", nested
+    else:
+        # No actor rode this token. The subject IS the caller — a bot, not a person.
+        return {"human": None, "agent": claims.get("sub"), "chain": [],
+                "actor_type": actor_type or "service", "source": "none",
+                "discrepancy": discrepancy}
+
+    return {"human": claims.get("sub"), "agent": chain[0], "chain": chain,
+            "actor_type": actor_type, "source": source, "discrepancy": discrepancy}
+
+
 def mint_service_account(service_id: str, resource: str, ttl: int = _TTL) -> str:
     """Mint the token MOST MCP deployments actually send: a shared service
     account, scoped to the resource, carrying NO `act` — so no human rides it.
