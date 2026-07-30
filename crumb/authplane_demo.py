@@ -115,6 +115,12 @@ CASES = [
          "agent_chain": ["planner", "researcher"], "actor_type": "agent",
          "act": {"sub": "planner", "act": {"sub": "ghost"}}},
     ),
+    (
+        "actor present, identified without a sub",
+        "legal RFC 8693 — the human survives, the agent is not invented",
+        {"sub": "alice", "act": {"actor_type": "agent",
+                                 "client_id": "urn:agent:planner"}},
+    ),
 ]
 
 
@@ -166,13 +172,13 @@ def main() -> None:
             print(f"      crumb #{rec['seq']}  {rec['entry_hash'][:16]}…")
 
         print("\n" + LINE)
-        print("  The ledger those five calls produced:")
+        print(f"  The ledger those {len(written)} calls produced:")
         print(LINE)
         print(f"  {'seq':>3}  {'actor_identity':<16}  {'agent_id':<16}  "
-              f"{'src':<5}  chain")
+              f"{'src':<7}  chain")
         for rec in written:
             print(f"  {rec['seq']:>3}  {str(rec['actor_identity']):<16}  "
-                  f"{rec['agent_id']:<16}  {rec['claim_source']:<5}  "
+                  f"{str(rec['agent_id']):<16}  {rec['claim_source']:<7}  "
                   f"{rec.get('actor_chain', [])}")
 
         print("\n  Verifying…")
@@ -188,6 +194,9 @@ def main() -> None:
         print("  seq 4 is why the record is not just a copy of the claim: a token that")
         print("  disagrees with itself still produced an answerable call, and the")
         print("  contradiction is now in a signed record instead of nowhere.")
+        print("  seq 5 is the line this consumer will not cross. An actor is present")
+        print("  but unnameable, so the human is kept and the agent is left null —")
+        print("  recording alice as the bot that acted would be worse than a gap.")
         print(LINE)
     finally:
         server.should_exit = True

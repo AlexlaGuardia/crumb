@@ -187,6 +187,17 @@ _FLAT_AGENT = "agent_id"
 _FLAT_CHAIN = "agent_chain"
 
 
+def _actor_id(value: object) -> str | None:
+    """An actor identifier, or None if it isn't one.
+
+    Whatever lands here is going into a signed, permanent record that a third
+    party will read as "this agent made this call". A dict, an int or an empty
+    string is not an agent id, and writing one into the ledger would be
+    fabricating an actor out of malformed input. Refuse instead.
+    """
+    return value if isinstance(value, str) and value.strip() else None
+
+
 def _flat_chain(claims: dict, outermost: str | None) -> tuple[list, str | None]:
     """Read a flat `agent_chain` and normalize it to most-recent-actor-first.
 
@@ -198,17 +209,34 @@ def _flat_chain(claims: dict, outermost: str | None) -> tuple[list, str | None]:
     chain is orientation-free. If it sits on NEITHER end the two representations
     genuinely disagree, and we say so instead of silently picking one.
 
+    Two cases that look decidable and are not. A chain whose members don't all
+    parse as ids is unusable — we won't guess which entry was meant. And when the
+    authoritative actor sits at BOTH ends (an agent that delegated onward and was
+    handed control back), either reading puts it outermost while the hops between
+    run opposite ways; that's audit-only ordering, but a flight recorder says
+    "ambiguous" rather than picking the pleasant one.
+
     Returns (chain-most-recent-first, discrepancy-or-None).
     """
-    chain = claims.get(_FLAT_CHAIN)
-    if not isinstance(chain, list) or not chain:
+    raw = claims.get(_FLAT_CHAIN)
+    if raw is None:
         return [], None
-    chain = list(chain)
+    if not isinstance(raw, list) or not raw:
+        return [], f"{_FLAT_CHAIN} is not a non-empty list: {raw!r}"
+    chain = [_actor_id(v) for v in raw]
+    if any(c is None for c in chain):
+        return [], f"{_FLAT_CHAIN} contains entries that are not actor ids: {raw!r}"
     if outermost is None or len(chain) == 1:
         return chain, None
-    if chain[0] == outermost:
+    head, tail = chain[0] == outermost, chain[-1] == outermost
+    if head and tail and chain != list(reversed(chain)):
+        return chain, (
+            f"{_FLAT_CHAIN} {chain!r} starts and ends with the authoritative actor "
+            f"{outermost!r} — hop order between them is ambiguous"
+        )
+    if head:
         return chain, None
-    if chain[-1] == outermost:
+    if tail:
         return list(reversed(chain)), None   # AS emitted oldest-first
     return chain, (
         f"{_FLAT_CHAIN} {chain!r} contains no end matching the authoritative "
@@ -246,10 +274,14 @@ def resolve_actor(claims: dict) -> dict:
     recorder that quietly normalizes away a contradiction has destroyed the one
     detail worth recording.
     """
-    nested = actor_chain(claims)                      # most-recent-first, may be []
-    flat_agent = claims.get(_FLAT_AGENT)
+    nested = [_actor_id(a) for a in actor_chain(claims)]   # most-recent-first
+    if any(a is None for a in nested):
+        nested = []                                       # unusable, not authoritative
+    flat_agent = _actor_id(claims.get(_FLAT_AGENT))
     outermost = flat_agent or (nested[0] if nested else None)
     flat, discrepancy = _flat_chain(claims, outermost)
+    if flat_agent is None and flat:
+        outermost = flat[0]                               # chain without an agent_id
 
     # actor_type describes the actor holding the token. Her spelling is
     # `act.actor_type`; the SDK reference also lists it top-level. Read both.
@@ -260,7 +292,7 @@ def resolve_actor(claims: dict) -> dict:
     if actor_type is None:
         actor_type = claims.get("actor_type")
 
-    if flat_agent is not None:
+    if flat_agent is not None or flat:
         source, chain = "flat", (flat or [flat_agent])
         # Both representations present: they describe the same chain, so a
         # mismatch is a real signal about the issuer, not noise to smooth over.
@@ -271,8 +303,22 @@ def resolve_actor(claims: dict) -> dict:
             )
     elif nested:
         source, chain = "act", nested
+    elif any(claims.get(k) is not None for k in ("act", _FLAT_AGENT, _FLAT_CHAIN)):
+        # An actor claim IS present and we could not read an actor out of it.
+        # This is NOT a service account, and the distinction is the whole product:
+        # `sub` here is the HUMAN who delegated, so naming them as the agent would
+        # record a person as the bot that acted — the exact inversion Crumb exists
+        # to prevent. Keep the human, refuse to invent an agent, and say why.
+        return {"human": claims.get("sub"), "agent": None, "chain": [],
+                "actor_type": actor_type, "source": "unresolved",
+                "discrepancy": discrepancy or (
+                    "token carries actor claims but no readable actor id "
+                    f"(act={claims.get('act')!r}, {_FLAT_AGENT}="
+                    f"{claims.get(_FLAT_AGENT)!r}, {_FLAT_CHAIN}="
+                    f"{claims.get(_FLAT_CHAIN)!r})"
+                )}
     else:
-        # No actor rode this token. The subject IS the caller — a bot, not a person.
+        # No actor claim at all. The subject IS the caller — a bot, not a person.
         return {"human": None, "agent": claims.get("sub"), "chain": [],
                 "actor_type": actor_type or "service", "source": "none",
                 "discrepancy": discrepancy}

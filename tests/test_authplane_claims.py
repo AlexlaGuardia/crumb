@@ -167,6 +167,78 @@ def test_actor_type_reads_from_inside_act_as_well_as_top_level():
     assert nested["human"] == "alice" and flat["human"] == "alice"
 
 
+# --- refusing to invent an actor -------------------------------------------
+#
+# These are regressions. The first cut of the resolver returned `agent = sub`
+# whenever no actor resolved, which is right only when `sub` really is the bot.
+# On a token that carried actor claims we couldn't read, it recorded the HUMAN as
+# the agent and reported the call as a service account — a person named as the
+# bot that acted, signed into an append-only ledger. That is the precise
+# inversion this project exists to prevent, so each door into it gets a test.
+
+def test_flat_chain_without_an_agent_id_still_names_the_agent():
+    """Regression: an AS that stamps `agent_chain` but no `agent_id` used to
+    resolve as a service account with alice recorded as the bot."""
+    actor = resolve_actor(_authplane(agent_chain=["planner", "researcher"]))
+
+    assert actor["human"] == "alice"
+    assert actor["agent"] == "planner"
+    assert actor["chain"] == ["planner", "researcher"]
+
+
+def test_act_without_a_sub_is_unresolved_not_a_service_account():
+    """RFC 8693 permits an actor identified by claims other than `sub`. We can't
+    name that actor — but the token plainly carries one, so `sub` is still the
+    human and must not be relabelled as the agent."""
+    actor = resolve_actor(_authplane(act={"actor_type": "agent"}))
+
+    assert actor["human"] == "alice"     # the human survives
+    assert actor["agent"] is None        # and we refuse to invent an agent
+    assert actor["source"] == "unresolved"
+    assert actor["discrepancy"] is not None
+
+
+def test_malformed_actor_claims_never_name_the_human_as_the_agent():
+    for claims in (
+        _authplane(act=[{"sub": "x"}]),          # act as a list
+        _authplane(agent_id=7),                  # non-string id
+        _authplane(agent_id="   "),              # blank id
+    ):
+        actor = resolve_actor(claims)
+        assert actor["agent"] != "alice", claims
+        assert actor["human"] == "alice", claims
+        assert actor["source"] == "unresolved", claims
+
+
+def test_non_string_chain_entries_are_refused_not_recorded():
+    """A dict is not an agent id. Writing one into a signed record would be
+    fabricating an actor out of malformed input."""
+    actor = resolve_actor(_authplane(agent_id="planner",
+                                     agent_chain=[{"a": 1}, None]))
+
+    assert actor["agent"] == "planner"       # the readable claim still answers
+    assert actor["chain"] == ["planner"]     # the garbage chain is dropped
+    assert actor["discrepancy"] is not None
+
+
+def test_actor_at_both_ends_of_the_chain_is_flagged_ambiguous():
+    """An agent that delegated onward and was handed control back sits at both
+    ends. Either reading puts it outermost while the hops between run opposite
+    ways, so the order is genuinely undecidable."""
+    actor = resolve_actor(_authplane(agent_id="A",
+                                     agent_chain=["A", "B", "C", "A"]))
+
+    assert actor["agent"] == "A"
+    assert "ambiguous" in actor["discrepancy"]
+
+
+def test_a_symmetric_round_trip_chain_is_not_flagged():
+    """A -> B -> A reads the same both ways; there is nothing to be unsure of."""
+    actor = resolve_actor(_authplane(agent_id="A", agent_chain=["A", "B", "A"]))
+
+    assert actor["discrepancy"] is None
+
+
 # --- end to end, over the resource server ----------------------------------
 
 def test_resource_server_resolves_an_authplane_shaped_token(monkeypatch):
